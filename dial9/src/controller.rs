@@ -57,6 +57,15 @@ pub struct RunArgs {
     ping_payload_bytes: u16,
     #[arg(long, default_value_t = 999)]
     cpu_sample_hz: u64,
+    /// Workload to record after the tunnel comes up.
+    #[arg(long, value_enum, default_value_t = crate::tunnel::Workload::Ping)]
+    workload: crate::tunnel::Workload,
+    /// Seconds per iperf3 direction (send and receive each).
+    #[arg(long, default_value_t = 10)]
+    iperf_seconds: u16,
+    /// Port of the iperf3 server started on the peer.
+    #[arg(long, default_value_t = 5201)]
+    iperf_port: u16,
 }
 
 /// The ephemeral key material of one run; held in memory only.
@@ -123,6 +132,16 @@ async fn orchestrate(
         .await
         .context("remote endpoint failed to start")?;
 
+    let iperf = match args.workload {
+        crate::tunnel::Workload::Ping => None,
+        crate::tunnel::Workload::Iperf => {
+            let server =
+                spawn_remote_iperf_server(&args.peer, args.peer_tunnel_address, args.iperf_port)
+                    .await?;
+            Some(server)
+        }
+    };
+
     let tunnel = spawn_local_tunnel(&tunnel_values(args, keys, peer_port))?;
     // The tunnel is a root child; the controller only shepherds it.
     let mut tunnel = match tunnel {
@@ -137,6 +156,9 @@ async fn orchestrate(
         .wait()
         .await
         .context("failed to wait for the profiled tunnel")?;
+    if let Some(mut iperf) = iperf {
+        let _ = iperf.start_kill();
+    }
     stop_remote_endpoint(&args.peer, remote_pid).await;
 
     if !status.success() {
@@ -210,6 +232,12 @@ fn tunnel_values(args: &RunArgs, keys: &KeyMaterial, peer_port: u16) -> Vec<Stri
         args.ping_payload_bytes.to_string(),
         "--cpu-sample-hz".to_owned(),
         args.cpu_sample_hz.to_string(),
+        "--workload".to_owned(),
+        format!("{:?}", args.workload).to_lowercase(),
+        "--iperf-seconds".to_owned(),
+        args.iperf_seconds.to_string(),
+        "--iperf-port".to_owned(),
+        args.iperf_port.to_string(),
     ]
     .to_vec()
 }
@@ -272,6 +300,28 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
     .await
     .context("timed out waiting for readiness")?
     .context("failed to read readiness")
+}
+
+/// Starts the iperf3 server on the peer, bound to its tunnel address (which exists once the
+/// endpoint is up). The server is tied to this ssh child: aborting it tears the ssh session
+/// down, which closes the remote iperf3.
+async fn spawn_remote_iperf_server(
+    peer: &str,
+    bind: Ipv4Addr,
+    port: u16,
+) -> Result<tokio::process::Child> {
+    let command = format!("iperf3 --server --bind {bind} --port {port}");
+    let child = Command::new("ssh")
+        .arg(peer)
+        .arg(command)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("failed to start the iperf3 server on {peer}"))?;
+    // Give the server a moment to bind before the client races it.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    Ok(child)
 }
 
 async fn stop_remote_endpoint(peer: &str, pid: u32) {
