@@ -226,6 +226,7 @@ impl Session {
     /// Returns `Err(packet)` (the original, un-encapsulated packet) once the sending counter has
     /// reached `REJECT_AFTER_MESSAGES`: the session must then be replaced by a fresh handshake
     /// before more transport data can be sent, so the AEAD nonce can never wrap.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub(super) fn format_packet_data(&self, packet: Packet) -> Result<Packet<WgData>, Packet> {
         // Check before incrementing so an exhausted counter is never advanced (and thus can never
         // wrap back around to a previously used value).
@@ -279,6 +280,7 @@ impl Session {
     }
 
     /// Decapsulate `packet` and return the decrypted data.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub(super) fn receive_packet_data(
         &self,
         mut packet: Packet<WgData>,

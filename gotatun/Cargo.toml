@@ -45,6 +45,7 @@ duplicate = { workspace = true, default-features = false }
 either = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
+hotpath = { workspace = true, optional = true }
 hmac = { workspace = true }
 ip_network = { workspace = true }
 ip_network_table = { workspace = true }
@@ -105,6 +106,10 @@ nix = { workspace = true, default-features = false, features = [
 [features]
 default = ["aws-lc-rs"]
 daita = ["device", "dep:maybenot"]
+# Profile the data path with hotpath-rs for the benchmarking setup. Compiles to
+# nothing unless enabled: https://hotpath.rs
+hotpath = ["dep:hotpath", "hotpath/hotpath"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 # Use the `ring` crate as the AEAD backend. Combine with
 # `default-features = false` to avoid also pulling in `aws-lc-rs`,
 # which would otherwise be compiled and linked unused.
