@@ -702,7 +702,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gotatun-throughput-benchmark"
+name = "gotatun-hotpath-benchmark"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -711,14 +711,27 @@ dependencies = [
  "bytes",
  "clap",
  "gotatun",
- "hex",
  "hotpath",
+ "rand",
+ "tokio",
+ "zerocopy",
+]
+
+[[package]]
+name = "gotatun-throughput-benchmark"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "benchy-lib",
+ "benchy-runner",
+ "clap",
+ "gotatun",
+ "hex",
  "ipnetwork",
  "rand",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zerocopy",
 ]
 
 [[package]]

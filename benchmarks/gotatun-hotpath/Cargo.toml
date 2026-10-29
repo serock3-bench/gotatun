@@ -1,0 +1,30 @@
+[package]
+name = "gotatun-hotpath-benchmark"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[package.metadata.benchy]
+id = "gotatun-hotpath"
+default = true
+
+[dependencies]
+anyhow.workspace = true
+benchy-lib.workspace = true
+benchy-runner.workspace = true
+bytes.workspace = true
+clap.workspace = true
+gotatun.workspace = true
+hotpath = { workspace = true, optional = true }
+rand.workspace = true
+tokio.workspace = true
+zerocopy.workspace = true
+
+[features]
+default = ["hotpath"]
+# Profile the gotatun data path with hotpath-rs. This benchmark intentionally
+# carries the profiling cost, keeping the throughput benchmark unprofiled: in
+# PR testing the instrumentation overhead was measured at a double-digit
+# percentage of tunnel throughput. See benchmarks/README.md.
+hotpath = ["dep:hotpath", "gotatun/hotpath-alloc", "hotpath/hotpath-alloc"]

@@ -13,20 +13,11 @@ default = true
 anyhow.workspace = true
 benchy-lib.workspace = true
 benchy-runner.workspace = true
-bytes.workspace = true
 clap.workspace = true
 gotatun.workspace = true
 hex.workspace = true
-hotpath = { workspace = true, optional = true }
 ipnetwork.workspace = true
 rand.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-zerocopy.workspace = true
-
-[features]
-default = ["hotpath"]
-# Profile the gotatun data path while the throughput benchmark runs and record
-# per-function measurements from the hotpath-rs reports. See benchmarks/README.md.
-hotpath = ["dep:hotpath", "gotatun/hotpath-alloc", "hotpath/hotpath-alloc"]

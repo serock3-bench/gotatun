@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail};
 use benchy_lib::Unit;
 use benchy_runner::{
     BenchmarkDefinition, MachineLock, MeasurementDefinition, Recorder, checked_output,
-    default_output_path, hotpath::record_hotpath_report, parse_iperf_output,
+    default_output_path, parse_iperf_output,
 };
 use clap::{Args, Parser, Subcommand};
 use gotatun::{
@@ -78,10 +78,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Endpoint(EndpointArgs),
-    /// Exercise the instrumented data path in-process and write a hotpath report. No TUN
-    /// devices, privileges, or peer machines are needed; use it to verify the hotpath
-    /// integration without running the full benchmark.
-    Selftest,
 }
 
 #[derive(Args, Clone)]
@@ -106,9 +102,6 @@ struct EndpointArgs {
     mtu: u16,
     #[arg(long, default_value_t = 300)]
     lease_seconds: u64,
-    /// Write a hotpath-rs profiling report for this endpoint to the given path.
-    #[arg(long)]
-    hotpath_output: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -127,8 +120,6 @@ struct BenchmarkOutput {
     iperf: benchy_lib::iperf::Output,
     alice_gotatun_cpu_percent: f64,
     bob_gotatun_cpu_percent: f64,
-    alice_hotpath_report: Option<Vec<u8>>,
-    bob_hotpath_report: Option<Vec<u8>>,
 }
 
 struct ProcessCpuSample {
@@ -144,11 +135,8 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    if let Some(command) = cli.command {
-        return match command {
-            Commands::Endpoint(args) => run_endpoint(args).await,
-            Commands::Selftest => run_selftest(cli.output).await,
-        };
+    if let Some(Commands::Endpoint(args)) = cli.command {
+        return run_endpoint(args).await;
     }
 
     let output = cli
@@ -177,16 +165,6 @@ async fn main() -> Result<()> {
             )?;
             recorder.measurement(DOWN_GOTATUN_CPU, output.alice_gotatun_cpu_percent)?;
             recorder.measurement(UP_GOTATUN_CPU, output.bob_gotatun_cpu_percent)?;
-            if let Some(report) = &output.alice_hotpath_report {
-                record_hotpath_report(&mut recorder, "alice", report)?;
-            } else {
-                eprintln!("::warning::no hotpath report from alice");
-            }
-            if let Some(report) = &output.bob_hotpath_report {
-                record_hotpath_report(&mut recorder, "bob", report)?;
-            } else {
-                eprintln!("::warning::no hotpath report from bob");
-            }
             recorder.success().await
         }
         Err(error) => {
@@ -217,14 +195,6 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
     let bob_public = PublicKey::from(&bob_private);
     let preshared_key = rand::random::<[u8; 32]>();
 
-    let executable = env::current_exe().context("failed to locate benchmark executable")?;
-    let run_id = env::var("GITHUB_RUN_ID").unwrap_or_else(|_| std::process::id().to_string());
-    let remote_dir = format!("/tmp/benchy-{run_id}");
-    let remote_executable = format!("{remote_dir}/gotatun-throughput");
-    let alice_hotpath_path =
-        std::env::temp_dir().join(format!("benchy-hotpath-alice-{run_id}.json"));
-    let bob_hotpath_path = std::env::temp_dir().join(format!("benchy-hotpath-bob-{run_id}.json"));
-    let remote_hotpath_path = format!("{remote_dir}/hotpath.json");
     let local_args = EndpointArgs {
         interface: config.interface.clone(),
         private_key: hex::encode(alice_private.to_bytes()),
@@ -236,7 +206,6 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
         listen_port: config.listen_port,
         mtu: config.mtu,
         lease_seconds: config.duration + 120,
-        hotpath_output: Some(alice_hotpath_path.clone()),
     };
     let remote_args = EndpointArgs {
         private_key: hex::encode(bob_private.to_bytes()),
@@ -244,9 +213,13 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
         peer_endpoint: SocketAddr::new(config.alice_address, config.listen_port),
         tunnel_address: local_args.peer_tunnel_address,
         peer_tunnel_address: local_args.tunnel_address,
-        hotpath_output: Some(PathBuf::from(&remote_hotpath_path)),
         ..local_args.clone()
     };
+
+    let executable = env::current_exe().context("failed to locate benchmark executable")?;
+    let run_id = env::var("GITHUB_RUN_ID").unwrap_or_else(|_| std::process::id().to_string());
+    let remote_dir = format!("/tmp/benchy-{run_id}");
+    let remote_executable = format!("{remote_dir}/gotatun-throughput");
     deploy(&config.peer, &executable, &remote_dir, &remote_executable).await?;
 
     let mut local = spawn_local_endpoint(&executable, &local_args)?;
@@ -314,8 +287,6 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
                 alice_clock_ticks,
             )?,
             bob_gotatun_cpu_percent: process_cpu_percent(&bob_before, &bob_after, bob_clock_ticks)?,
-            alice_hotpath_report: None,
-            bob_hotpath_report: None,
         })
     }
     .await;
@@ -326,41 +297,7 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
     let _ = remote.wait().await;
     let _ = iperf_server.kill().await;
 
-    let mut output = match result {
-        Ok(output) => output,
-        Err(error) => return Err(error),
-    };
-    // The endpoints exit cleanly after the stop signal, so both reports exist by now. A missing
-    // report skips this run's hotpath measurements but keeps the tunnel results.
-    output.alice_hotpath_report = read_hotpath_report(&alice_hotpath_path).await;
-    if checked_output(
-        "scp",
-        [
-            format!("{}:{}", config.peer, remote_hotpath_path),
-            bob_hotpath_path.to_string_lossy().into_owned(),
-        ],
-    )
-    .await
-    .is_ok()
-    {
-        output.bob_hotpath_report = read_hotpath_report(&bob_hotpath_path).await;
-    } else {
-        eprintln!("::warning::failed to fetch bob's hotpath report");
-    }
-    Ok(output)
-}
-
-async fn read_hotpath_report(path: &Path) -> Option<Vec<u8>> {
-    match tokio::fs::read(path).await {
-        Ok(bytes) => Some(bytes),
-        Err(error) => {
-            eprintln!(
-                "::warning::no hotpath report at {}: {error}",
-                path.display()
-            );
-            None
-        }
-    }
+    result
 }
 
 async fn clock_ticks_per_second(peer: Option<&str>) -> Result<u64> {
@@ -439,14 +376,6 @@ fn process_cpu_percent(
 }
 
 async fn run_endpoint(args: EndpointArgs) -> Result<()> {
-    // The guard's drop writes the hotpath report once the endpoint has shut down cleanly.
-    let _hotpath_guard = args.hotpath_output.as_deref().map(|path| {
-        hotpath::HotpathGuardBuilder::new("endpoint")
-            .format(hotpath::Format::Json)
-            .output_path(path)
-            .build()
-    });
-
     let private_key = StaticSecret::from(decode_key(&args.private_key)?);
     let public_key = PublicKey::from(decode_key(&args.peer_public_key)?);
     let preshared_key = decode_key(&args.preshared_key)?;
@@ -503,135 +432,6 @@ async fn run_endpoint(args: EndpointArgs) -> Result<()> {
         _ = device.wait() => bail!("GotaTun device stopped unexpectedly"),
     }
     device.stop().await;
-    Ok(())
-}
-
-/// Runs the instrumented data path in-process - one handshake, then packets through both
-/// tunnel directions - and records the resulting hotpath report into a benchmark result file,
-/// exercising the same conversion the controller uses. No TUN devices, privileges, or peer
-/// machines are needed.
-async fn run_selftest(output: Option<PathBuf>) -> Result<()> {
-    use bytes::BytesMut;
-    use gotatun::noise::{Tunn, TunnResult, index_table::IndexTable, rate_limiter::RateLimiter};
-    use gotatun::packet::{IpNextProtocol, Ipv4, Ipv4Header, Packet, WgKind};
-    use std::net::Ipv4Addr;
-    use std::sync::Arc;
-    use zerocopy::FromBytes;
-
-    const HANDSHAKE_RATE_LIMIT: u64 = 100;
-    const PACKETS_PER_DIRECTION: usize = 20_000;
-    const PAYLOAD_LEN: usize = 1200;
-
-    // The report lives outside any result directory: export-bencher treats every JSON file
-    // there as a benchmark result.
-    let report_path = std::env::temp_dir().join("gotatun-throughput-selftest.hotpath.json");
-    let output = output.unwrap_or_else(|| default_output_path(DEFINITION.name));
-
-    {
-        let _hotpath_guard = hotpath::HotpathGuardBuilder::new("selftest")
-            .format(hotpath::Format::Json)
-            .output_path(&report_path)
-            .build();
-
-        let make_tunn = |private: StaticSecret, peer_public: PublicKey| {
-            let public = PublicKey::from(&private);
-            let rate_limiter = Arc::new(RateLimiter::new(&public, HANDSHAKE_RATE_LIMIT));
-            Tunn::new(
-                private,
-                peer_public,
-                None,
-                None,
-                IndexTable::from_os_rng(),
-                rate_limiter,
-            )
-        };
-
-        let alice_private = StaticSecret::from(rand::random::<[u8; 32]>());
-        let bob_private = StaticSecret::from(rand::random::<[u8; 32]>());
-        let alice_public = PublicKey::from(&alice_private);
-        let bob_public = PublicKey::from(&bob_private);
-        let mut alice = make_tunn(alice_private, bob_public);
-        let mut bob = make_tunn(bob_private, alice_public);
-
-        let packet_template = {
-            let payload = vec![0u8; PAYLOAD_LEN];
-            let mut buf = BytesMut::zeroed(Ipv4Header::LEN + payload.len());
-            let ipv4 = Ipv4::<[u8]>::mut_from_bytes(&mut buf).expect("buffer fits an IPv4 header");
-            ipv4.header = Ipv4Header::new(
-                Ipv4Addr::new(10, 0, 1, 1),
-                Ipv4Addr::new(10, 0, 1, 2),
-                IpNextProtocol::Udp,
-                &payload,
-            );
-            ipv4.payload.copy_from_slice(&payload);
-            buf.freeze()
-        };
-
-        let handshake_init = alice
-            .format_handshake_initiation(false)
-            .context("failed to format handshake initiation")?;
-        let TunnResult::WriteToNetwork(handshake) =
-            bob.handle_incoming_packet(WgKind::HandshakeInit(handshake_init))
-        else {
-            bail!("expected a handshake response");
-        };
-        let WgKind::HandshakeResp(handshake) = handshake else {
-            bail!("expected a handshake response packet");
-        };
-        match alice.handle_incoming_packet(WgKind::HandshakeResp(handshake)) {
-            TunnResult::WriteToNetwork(WgKind::Data(keepalive)) => {
-                let _ = bob.handle_incoming_packet(WgKind::Data(keepalive));
-            }
-            result => bail!("handshake did not complete: {result:?}"),
-        }
-
-        for _ in 0..PACKETS_PER_DIRECTION {
-            // The packet buffers are consumed by encapsulation, so every iteration needs a fresh
-            // copy of the template.
-            let packet = Packet::from_bytes(BytesMut::from(&packet_template[..]));
-            let Some(wg_packet) = alice.handle_outgoing_packet(packet, None) else {
-                bail!("failed to encapsulate a packet");
-            };
-            let WgKind::Data(wg_packet) = wg_packet else {
-                bail!("expected an encapsulated data packet");
-            };
-            match bob.handle_incoming_packet(WgKind::Data(wg_packet)) {
-                TunnResult::WriteToTunnel(decrypted) => {
-                    std::hint::black_box(&decrypted);
-                }
-                result => bail!("failed to decapsulate a packet: {result:?}"),
-            }
-
-            let packet = Packet::from_bytes(BytesMut::from(&packet_template[..]));
-            let Some(wg_packet) = bob.handle_outgoing_packet(packet, None) else {
-                bail!("failed to encapsulate a packet");
-            };
-            let WgKind::Data(wg_packet) = wg_packet else {
-                bail!("expected an encapsulated data packet");
-            };
-            match alice.handle_incoming_packet(WgKind::Data(wg_packet)) {
-                TunnResult::WriteToTunnel(decrypted) => {
-                    std::hint::black_box(&decrypted);
-                }
-                result => bail!("failed to decapsulate a packet: {result:?}"),
-            }
-        }
-    }
-
-    // Dropping the guard above wrote the report; now convert it like the controller would.
-    let report = tokio::fs::read(&report_path)
-        .await
-        .with_context(|| format!("failed to read {}", report_path.display()))?;
-    let mut recorder = Recorder::new(DEFINITION, &output).await;
-    recorder.parameter("selftest_packets_per_direction", PACKETS_PER_DIRECTION);
-    recorder.parameter("selftest_payload_len", PAYLOAD_LEN);
-    record_hotpath_report(&mut recorder, "selftest", &report)?;
-    recorder.success().await?;
-    println!(
-        "exchanged {PACKETS_PER_DIRECTION} packets per direction; result: {}; hotpath report: {}",
-        output.display(),
-        report_path.display()
-    );
     Ok(())
 }
 
@@ -773,10 +573,6 @@ fn append_endpoint_values(values: &mut Vec<String>, args: &EndpointArgs) {
         "--lease-seconds".to_owned(),
         args.lease_seconds.to_string(),
     ]);
-    if let Some(path) = &args.hotpath_output {
-        values.push("--hotpath-output".to_owned());
-        values.push(path.to_string_lossy().into_owned());
-    }
 }
 
 fn remote_command(program: &str, args: &[String]) -> String {

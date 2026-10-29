@@ -26,37 +26,36 @@ and may change without breaking a result series.
 
 ## hotpath profiling
 
-The benchmark also profiles GotaTun's data path with [hotpath-rs](https://hotpath.rs). Both
-endpoints build with the crate features enabled through the benchmark's default `hotpath` feature
-(`gotatun/hotpath-alloc`): the library instrumentation is compiled to nothing when the feature is
-off, so production builds are unaffected. Each endpoint writes a hotpath JSON report when it shuts
-down, and the controller converts both reports into measurements prefixed by their host:
+A second default benchmark, `gotatun-hotpath`, profiles GotaTun's data path with
+[hotpath-rs](https://hotpath.rs). It runs the per-packet data path in-process - no TUN devices,
+network, or privileges, just two tunnels exchanging packets through both directions - and records
+per-function measurements from the hotpath JSON report written at the end:
 
-- `hotpath.<host>.<function path>.calls` - how often the function ran (`count`)
-- `hotpath.<host>.<function path>.time` - average time per call (`seconds`)
-- `hotpath.<host>.<function path>.alloc` - average allocation bytes per call (`bytes`)
+- `hotpath.selftest.<function path>.calls` - how often the function ran (`count`)
+- `hotpath.selftest.<function path>.time` - average time per call (`seconds`)
+- `hotpath.selftest.<function path>.alloc` - average allocation bytes per call (`bytes`)
 
 Rust paths keep their shape with `::` mapped to `.` (the measurement ID grammar does not allow
-colons), e.g. `hotpath.alice.gotatun.noise.session.format_packet_data.time`; display labels use
-the short function name. The currently instrumented functions are the per-packet data path:
+colons), e.g. `hotpath.selftest.gotatun.noise.session.format_packet_data.time`; display labels
+use the short function name. The currently instrumented functions are the per-packet data path:
 `Tunn::handle_outgoing_packet`, `Session::format_packet_data`, `Tunn::handle_incoming_packet`,
 and `Session::receive_packet_data`. More `#[cfg_attr(feature = "hotpath", hotpath::measure)]`
-annotations extend the metric set. The hotpath version is pinned in this workspace because the
-report format may change between releases.
+annotations in the library extend the metric set. The hotpath version is pinned in this workspace
+because the report format may change between releases.
 
-Profiling adds per-call instrumentation overhead to the measured functions, so the throughput
-numbers include it; comparisons stay valid because every run is built the same way. The
-instrumented data path currently performs no allocations (`alloc` measurements are 0).
+Profiling deliberately does **not** run inside the throughput benchmark: when both were combined,
+PR testing measured the instrumentation overhead (per-call timing plus the allocation-tracking
+allocator) at a double-digit percentage of tunnel throughput. Keeping it in its own benchmark
+isolates that cost while still tracking the data-path metrics over time. The instrumented data
+path performs no allocations (`alloc` measurements are 0).
 
-A `selftest` subcommand exercises the same data path in-process - no TUN devices, privileges, or
-peer machines - and produces a result file with the converted measurements plus the raw report in
-the system temp directory, so the whole chain can be verified locally:
+It can be run locally without any peer machines:
 
 ```console
 cargo run --release --locked \
   --config 'target."cfg(unix)".runner="/usr/bin/env"' \
   --manifest-path benchmarks/Cargo.toml \
-  --package gotatun-throughput-benchmark -- selftest
+  --package gotatun-hotpath-benchmark
 ```
 
 Configuration is read at runtime:
