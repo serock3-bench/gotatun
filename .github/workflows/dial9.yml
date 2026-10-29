@@ -23,6 +23,17 @@ on:
         required: false
         default: 999
         type: number
+      workload:
+        description: Workload to record (ping or iperf)
+        required: false
+        default: ping
+        type: choice
+        options: [ping, iperf]
+      iperf-seconds:
+        description: Seconds per iperf3 direction (send and receive each)
+        required: false
+        default: 10
+        type: number
 
 permissions:
   contents: read
@@ -63,7 +74,9 @@ jobs:
             --ping-count "${{ inputs.ping-count }}" \
             --ping-interval-ms "${{ inputs.ping-interval-ms }}" \
             --ping-payload-bytes "${{ inputs.ping-payload-bytes }}" \
-            --cpu-sample-hz "${{ inputs.cpu-sample-hz }}"
+            --cpu-sample-hz "${{ inputs.cpu-sample-hz }}" \
+            --workload "${{ inputs.workload }}" \
+            --iperf-seconds "${{ inputs.iperf-seconds }}"
       - name: Upload dial9 traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
