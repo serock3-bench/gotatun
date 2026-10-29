@@ -27,13 +27,13 @@ const REMOTE_DIR_PREFIX: &str = "benchy-dial9";
 
 #[derive(Debug, ClapArgs)]
 pub struct RunArgs {
-    #[arg(long, env = "BENCHY_PEER", default_value = "mole@10.0.0.2")]
+    #[arg(long, default_value = "mole@10.0.0.2")]
     peer: String,
-    #[arg(long, env = "BENCHY_ALICE_ADDRESS", default_value = "10.0.0.1")]
+    #[arg(long, default_value = "10.0.0.1")]
     alice_address: IpAddr,
-    #[arg(long, env = "BENCHY_BOB_ADDRESS", default_value = "10.0.0.2")]
+    #[arg(long, default_value = "10.0.0.2")]
     bob_address: IpAddr,
-    #[arg(long, env = "BENCHY_WIREGUARD_PORT", default_value_t = 51821)]
+    #[arg(long, default_value_t = 51821)]
     listen_port: u16,
     /// The peer machine's listen port, when it differs from ours.
     #[arg(long)]
@@ -82,7 +82,11 @@ struct KeyMaterial {
 }
 
 #[tokio::main]
-pub async fn run(args: RunArgs) -> Result<()> {
+pub async fn run(mut args: RunArgs) -> Result<()> {
+    // The workflow passes the BENCHY_* variables from GitHub vars, which arrive empty when
+    // they are not visible to the repository. Empty must not beat the defaults - the
+    // throughput benchmark's env_value filters them the same way.
+    override_from_env(&mut args);
     // Benchmark and profiling runs share the controller host and the peer machine.
     let _machine_lock = MachineLock::acquire("/tmp/benchy.lock")?;
 
@@ -96,6 +100,35 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let outcome = orchestrate(&args, &keys, &remote_executable, &remote_dir).await;
     cleanup(&args.peer, &remote_dir).await;
     outcome
+}
+
+fn override_from_env(args: &mut RunArgs) {
+    if let Ok(peer) = std::env::var("BENCHY_PEER") {
+        if !peer.is_empty() {
+            args.peer = peer;
+        }
+    }
+    if let Ok(address) = std::env::var("BENCHY_ALICE_ADDRESS") {
+        if let Ok(address) = address.parse::<IpAddr>() {
+            if !address.is_unspecified() {
+                args.alice_address = address;
+            }
+        }
+    }
+    if let Ok(address) = std::env::var("BENCHY_BOB_ADDRESS") {
+        if let Ok(address) = address.parse::<IpAddr>() {
+            if !address.is_unspecified() {
+                args.bob_address = address;
+            }
+        }
+    }
+    if let Ok(port) = std::env::var("BENCHY_WIREGUARD_PORT") {
+        if let Ok(port) = port.parse::<u16>() {
+            if port != 0 {
+                args.listen_port = port;
+            }
+        }
+    }
 }
 
 fn generate_keys() -> KeyMaterial {
