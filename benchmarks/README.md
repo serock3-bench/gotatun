@@ -24,6 +24,16 @@ The stable v1 measurement IDs are `throughput.sender`, `throughput.receiver`, `c
 `cpu.iperf.down`, `cpu.gotatun.up`, and `cpu.gotatun.down`. Display labels are recorded separately
 and may change without breaking a result series.
 
+## GitHub Actions
+
+Benchmarks run automatically for pushes to `main` and pull requests targeting `main`. Workflows
+from external contributors require maintainer approval from the pull request page. Manual runs
+can select a branch and a subset of benchmarks through the Actions tab.
+
+A separate publishing workflow uploads successful results to Bencher and posts a check and
+comment on the pull request. Reports identify the exact PR head commit tested; raw JSON remains
+available in the benchmark run's summary and artifacts.
+
 Configuration is read at runtime:
 
 - `BENCHY_PEER` (default `mole@10.0.0.2`)
