@@ -216,7 +216,6 @@ fn endpoint_values(
     peer_port: u16,
 ) -> Vec<String> {
     [
-        "endpoint".to_owned(),
         "--interface".to_owned(),
         args.interface.clone(),
         "--private-key".to_owned(),
@@ -298,7 +297,10 @@ async fn spawn_remote_endpoint(
 
 fn spawn_local_tunnel(values: &[String]) -> Result<Option<Child>> {
     let mut command = Command::new("sudo");
-    command.arg("-n").arg(std::env::current_exe()?);
+    command
+        .arg("-n")
+        .arg(std::env::current_exe()?)
+        .arg("tunnel");
     for value in values {
         command.arg(value);
     }
@@ -429,11 +431,21 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use super::{remote_command_of, shell_quote};
 
     #[test]
     fn shell_arguments_are_single_quoted() {
         assert_eq!(shell_quote("plain"), "'plain'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn remote_commands_carry_the_subcommand_exactly_once() {
+        let values = ["--interface".to_owned(), "d9gotatunb".to_owned()];
+        let command = remote_command_of("/tmp/remote/gotatun-dial9", "endpoint", &values);
+        assert_eq!(
+            command,
+            "/tmp/remote/gotatun-dial9 endpoint '--interface' 'd9gotatunb'"
+        );
     }
 }
