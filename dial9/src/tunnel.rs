@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The profiled near-side tunnel, run as root by `gotatun-dial9 run` through sudo. Everything
 //! below the recorder setup runs inside the dial9-instrumented Tokio runtime: the gotatun
 //! device, the TUN interface, the ping workload, and the teardown.

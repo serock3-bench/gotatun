@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The plain far-side tunnel endpoint, spawned on the peer machine by `gotatun-dial9 run`
 //! over ssh, under the peer's sudo. It only creates a TUN device, answers the tunnel, and
 //! exits when interrupted or when its lease expires; nothing here is profiled.
