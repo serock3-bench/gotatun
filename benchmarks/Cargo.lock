@@ -702,6 +702,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gotatun-criterion-benchmark"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "benchy-runner",
+ "clap",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "gotatun-hotpath-benchmark"
 version = "0.1.0"
 dependencies = [

@@ -49,28 +49,39 @@ change between releases.
 Other hotpath subsystems were evaluated and left out for now: channel profiling
 (`hotpath::channel!` around the `tokio::mpsc` endpoints of `udp::channel`) and the device-level
 tokio locks only carry data in a device-level benchmark, which does not exist yet - the natural
-extension is a third benchmark running two in-process devices wired together with
+extension is a benchmark running two in-process devices wired together with
 `udp::channel::new_udp_tun_channel`. Socket byte-level I/O profiling cannot cover the UDP path:
 the transport uses raw `sendmmsg`/`recvmmsg`, which implement none of the `Read`/`Write`/
-`AsyncRead`/`AsyncWrite` traits `hotpath::io!` wraps. The hotpath-criterion integration requires
-Criterion 0.8 while this workspace pins 0.7, so it needs a criterion upgrade first.
+`AsyncRead`/`AsyncWrite` traits `hotpath::io!` wraps.
 
-Call counts and allocation bytes are deliberately not recorded: the call count is a constant of
-the workload definition, and the allocation-free data path would only yield constant zeros, so
-neither tracks the code.
+## criterion benches
 
-Profiling deliberately does **not** run inside the throughput benchmark: when both were combined,
-PR testing measured the instrumentation overhead (per-call timing plus the allocation-tracking
-allocator) at a double-digit percentage of tunnel throughput. Keeping it in its own benchmark
-isolates that cost while still tracking the data-path costs over time.
+A third default benchmark, `gotatun-criterion`, profiles the repository's own criterion benches
+(`gotatun/benches/crypto_benches` and `gotatun/benches/throughput_benches`) in place through
+hotpath's criterion adapter: the benches import `Criterion`, `BenchmarkId`, `criterion_group!`,
+and `criterion_main!` from `hotpath::criterion` instead of `criterion`, and without the `hotpath`
+feature (or without `HOTPATH_CRITERION_ITERATIONS` set) they behave exactly as before. The
+criterion dependency moved to 0.8, which the adapter wraps.
 
-It can be run locally without any peer machines:
+The controller in `benchmarks/gotatun-criterion` discovers the gotatun package's bench targets
+through cargo metadata, then runs one `cargo bench ... --test --exact <id>` process per benchmark
+with `HOTPATH_CRITERION_ITERATIONS` (default 1000) and the report output configured through the
+environment, so each hotpath report covers exactly one routine. The bench is passed through
+`env` (`--config target."cfg(unix)".runner="/usr/bin/env"`) because bench machines configure a
+`sudo` runner for cargo targets that would strip the environment. The routine's average time per
+call is recorded in nanoseconds as `hotpath.<criterion id>.time` - e.g.
+`hotpath.chacha20poly1305.aws_lc_rs.n1400.time`, displayed as
+`chacha20poly1305 aws_lc_rs 1400 time per call (ns)` (numeric parameters gain an `n` prefix to
+satisfy the measurement ID grammar). The AEAD comparison bench names the configured default
+backend (`aws_lc_rs`), matching what gotatun itself ships.
+
+It can be run locally:
 
 ```console
 cargo run --release --locked \
   --config 'target."cfg(unix)".runner="/usr/bin/env"' \
   --manifest-path benchmarks/Cargo.toml \
-  --package gotatun-hotpath-benchmark
+  --package gotatun-criterion-benchmark -- --iterations 1000
 ```
 
 Configuration is read at runtime:

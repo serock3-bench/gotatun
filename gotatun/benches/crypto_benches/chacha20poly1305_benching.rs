@@ -17,7 +17,8 @@
 use aead::{AeadInPlace, KeyInit};
 #[cfg(feature = "aws-lc-rs")]
 use aws_lc_rs::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
-use criterion::{BenchmarkId, Criterion, Throughput};
+use criterion::Throughput;
+use hotpath::criterion::{BenchmarkId, Criterion};
 use rand::{TryRngCore, rngs::OsRng};
 #[cfg(all(feature = "ring", not(feature = "aws-lc-rs")))]
 use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};

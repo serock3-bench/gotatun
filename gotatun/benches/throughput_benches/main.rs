@@ -10,9 +10,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use bytes::BytesMut;
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::Throughput;
 use gotatun::packet::{IpNextProtocol, Ipv4, Ipv4Header, Packet};
 use gotatun::tun::channel::Ipv4Fragments;
+use hotpath::criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::rngs::StdRng;
 use rand::{SeedableRng, seq::SliceRandom};
 use std::hint::black_box;
