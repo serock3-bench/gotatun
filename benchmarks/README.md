@@ -32,7 +32,9 @@ can select a branch and a subset of benchmarks through the Actions tab.
 
 A separate publishing workflow uploads successful results to Bencher and posts a check and
 comment on the pull request. Reports identify the exact PR head commit tested; raw JSON remains
-available in the benchmark run's summary and artifacts.
+available in the benchmark run's summary and artifacts. Bencher also compares posted results
+against percentage-based regression thresholds for throughput and CPU usage, so potential
+regressions are flagged as alerts in the check and PR comment.
 
 Configuration is read at runtime:
 
