@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
             let report = tokio::fs::read(&report_path)
                 .await
                 .with_context(|| format!("failed to read {}", report_path.display()))?;
-            record_hotpath_report(&mut recorder, "selftest", &report)?;
+            record_hotpath_report(&mut recorder, None, &report)?;
             recorder.success().await
         }
         Err(error) => {

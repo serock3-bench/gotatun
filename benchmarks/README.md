@@ -31,23 +31,25 @@ A second default benchmark, `gotatun-hotpath`, profiles GotaTun's data path with
 network, or privileges, just two tunnels exchanging packets through both directions - and records
 per-function measurements from the hotpath JSON report written at the end:
 
-- `hotpath.selftest.<function path>.calls` - how often the function ran (`count`)
-- `hotpath.selftest.<function path>.time` - average time per call (`seconds`)
-- `hotpath.selftest.<function path>.alloc` - average allocation bytes per call (`bytes`)
+- `hotpath.<function path>.time` - average time per call in nanoseconds
 
 Rust paths keep their shape with `::` mapped to `.` (the measurement ID grammar does not allow
-colons), e.g. `hotpath.selftest.gotatun.noise.session.format_packet_data.time`; display labels
-use the short function name. The currently instrumented functions are the per-packet data path:
-`Tunn::handle_outgoing_packet`, `Session::format_packet_data`, `Tunn::handle_incoming_packet`,
-and `Session::receive_packet_data`. More `#[cfg_attr(feature = "hotpath", hotpath::measure)]`
+colons), e.g. `hotpath.gotatun.noise.session.format_packet_data.time`; display labels use the
+short function name, e.g. `format_packet_data time per call (ns)`. The currently instrumented
+functions are the per-packet data path: `Tunn::handle_outgoing_packet`,
+`Session::format_packet_data`, `Tunn::handle_incoming_packet`, and
+`Session::receive_packet_data`. More `#[cfg_attr(feature = "hotpath", hotpath::measure)]`
 annotations in the library extend the metric set. The hotpath version is pinned in this workspace
 because the report format may change between releases.
+
+Call counts and allocation bytes are deliberately not recorded: the call count is a constant of
+the workload definition, and the allocation-free data path would only yield constant zeros, so
+neither tracks the code.
 
 Profiling deliberately does **not** run inside the throughput benchmark: when both were combined,
 PR testing measured the instrumentation overhead (per-call timing plus the allocation-tracking
 allocator) at a double-digit percentage of tunnel throughput. Keeping it in its own benchmark
-isolates that cost while still tracking the data-path metrics over time. The instrumented data
-path performs no allocations (`alloc` measurements are 0).
+isolates that cost while still tracking the data-path costs over time.
 
 It can be run locally without any peer machines:
 
