@@ -27,6 +27,11 @@ the profiled tunnel through sudo), `endpoint` (the plain far-side tunnel on bob,
 profiled), and `tunnel` (the profiled near side, run as root by `run`). Key material is
 ephemeral, generated in memory for each run, and only ever passed between the two processes.
 
+Two workloads exist: `ping` (default; the original quiet ICMP probe) and `iperf`, which
+runs iperf3 through the tunnel for a line-rate load, first sending from this side and then
+receiving (`-R`), so one trace covers both the encrypt/send and the decrypt/receive data
+paths. The controller starts the matching iperf3 server on the peer automatically.
+
 The tunnel records CPU profiling, scheduler events, memory profiling with liveset tracking,
 process resource usage, Tokio task tracking, and everything gotatun logs (the tracing
 layer records the events into the trace alongside). The trace directory is capped at 128 MiB
