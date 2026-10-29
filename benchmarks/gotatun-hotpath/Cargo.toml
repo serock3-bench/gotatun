@@ -16,7 +16,7 @@ benchy-runner.workspace = true
 bytes.workspace = true
 clap.workspace = true
 gotatun.workspace = true
-hotpath = { workspace = true, optional = true }
+hotpath.workspace = true
 rand.workspace = true
 tokio.workspace = true
 zerocopy.workspace = true
@@ -27,4 +27,4 @@ default = ["hotpath"]
 # carries the profiling cost, keeping the throughput benchmark unprofiled: in
 # PR testing the instrumentation overhead was measured at a double-digit
 # percentage of tunnel throughput. See benchmarks/README.md.
-hotpath = ["dep:hotpath", "gotatun/hotpath", "hotpath/hotpath"]
+hotpath = ["gotatun/hotpath", "hotpath/hotpath"]

@@ -40,9 +40,11 @@ colons), e.g. `hotpath.gotatun.noise.session.format_packet_data.time`; display l
 short function name, e.g. `format_packet_data time per call (ns)`. The currently instrumented
 functions are the per-packet data path: `Tunn::handle_outgoing_packet`,
 `Session::format_packet_data`, `Tunn::handle_incoming_packet`, and
-`Session::receive_packet_data`. More `#[cfg_attr(feature = "hotpath", hotpath::measure)]`
-annotations in the library extend the metric set, and locks join via `hotpath::mutex!` at their
-creation site. hotpath reports locks per instance; instances of one creation site are merged into
+`Session::receive_packet_data`, plus `Session`'s `receiving_key_counter` lock via
+`hotpath::mutex!` at its creation site. hotpath is a regular dependency of the library and the
+instrumentation macros carry no feature conditions: `#[hotpath::measure]` and the lock wrappers
+compile to no-ops unless the crate's `hotpath` feature turns them on, so more annotations extend
+the metric set without touching any `cfg`. hotpath reports locks per instance; instances of one creation site are merged into
 a single metric. The hotpath version is pinned in this workspace because the report format may
 change between releases.
 
