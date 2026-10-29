@@ -1,0 +1,78 @@
+name: Dial9 profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      ping-count:
+        description: ICMP echo requests through the tunnel
+        required: false
+        default: 100
+        type: number
+      ping-interval-ms:
+        description: Delay between echo requests, in milliseconds
+        required: false
+        default: 10
+        type: number
+      ping-payload-bytes:
+        description: ICMP payload size in bytes (0-1392)
+        required: false
+        default: 56
+        type: number
+      cpu-sample-hz:
+        description: On-CPU sampling frequency in Hz
+        required: false
+        default: 999
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: Profile gotatun with dial9
+    # Manual only on purpose: profiling is heavy and the traces are artifacts,
+    # not part of the benchmark series that Bencher tracks.
+    runs-on: ["self-hosted", "Linux", "benchy"]
+    timeout-minutes: 30
+    env:
+      TRACE_DIR: ${{ runner.temp }}/dial9-traces-${{ github.run_id }}
+    steps:
+      - name: Checkout gotatun
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          rust-src-dir: .
+          cache: false
+      - name: Build the profiling harness
+        working-directory: dial9
+        run: cargo build --locked --profile profiling
+      - name: Report CPU profiling permissions
+        run: |
+          paranoid=$(cat /proc/sys/kernel/perf_event_paranoid)
+          echo "perf_event_paranoid=$paranoid (CPU profiling needs <= 2, scheduler events <= 1; dial9 falls back to its ctimer backend otherwise)"
+          [ "$paranoid" -le 2 ] || echo "::warning::perf_event_paranoid=$paranoid restricts perf-based CPU sampling"
+      - name: Record the tunnel under dial9
+        env:
+          BENCHY_PEER: ${{ vars.BENCHY_PEER }}
+          BENCHY_ALICE_ADDRESS: ${{ vars.BENCHY_ALICE_ADDRESS }}
+          BENCHY_BOB_ADDRESS: ${{ vars.BENCHY_BOB_ADDRESS }}
+          BENCHY_WIREGUARD_PORT: ${{ vars.BENCHY_WIREGUARD_PORT }}
+        run: |
+          dial9/target/profiling/gotatun-dial9 run \
+            --trace-dir "$TRACE_DIR" \
+            --ping-count "${{ inputs.ping-count }}" \
+            --ping-interval-ms "${{ inputs.ping-interval-ms }}" \
+            --ping-payload-bytes "${{ inputs.ping-payload-bytes }}" \
+            --cpu-sample-hz "${{ inputs.cpu-sample-hz }}"
+      - name: Upload dial9 traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dial9-traces-${{ github.run_id }}
+          path: ${{ env.TRACE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+      - name: Free the runner disk
+        if: ${{ always() }}
+        run: rm -rf "$TRACE_DIR"
