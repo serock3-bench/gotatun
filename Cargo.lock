@@ -967,6 +967,7 @@ dependencies = [
  "hotpath-drain",
  "hotpath-macros",
  "libc",
+ "parking_lot",
  "pin-project-lite",
  "quanta",
  "regex-lite",

@@ -17,6 +17,10 @@ use crate::{
     packet::{Packet, WgData, WgDataHeader, WgKind},
 };
 use bytes::{Buf, BytesMut};
+// The hotpath build swaps this for an instrumented wrapper with the same API.
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::parking_lot::Mutex;
+#[cfg(not(feature = "hotpath"))]
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zerocopy::FromBytes;
@@ -194,6 +198,12 @@ impl Session {
             ),
             sender: LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &sending_key).unwrap()),
             sending_key_counter: AtomicU64::new(0),
+            #[cfg(feature = "hotpath")]
+            receiving_key_counter: hotpath::mutex!(
+                parking_lot::Mutex::new(Default::default()),
+                label = "receiving-key-counter"
+            ),
+            #[cfg(not(feature = "hotpath"))]
             receiving_key_counter: Mutex::new(Default::default()),
         }
     }

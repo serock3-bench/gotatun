@@ -108,7 +108,7 @@ default = ["aws-lc-rs"]
 daita = ["device", "dep:maybenot"]
 # Profile the data path with hotpath-rs for the benchmarking setup. Compiles to
 # nothing unless enabled: https://hotpath.rs
-hotpath = ["dep:hotpath", "hotpath/hotpath"]
+hotpath = ["dep:hotpath", "hotpath/hotpath", "hotpath/parking_lot"]
 hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 # Use the `ring` crate as the AEAD backend. Combine with
 # `default-features = false` to avoid also pulling in `aws-lc-rs`,

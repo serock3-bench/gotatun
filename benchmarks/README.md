@@ -32,6 +32,8 @@ network, or privileges, just two tunnels exchanging packets through both directi
 per-function measurements from the hotpath JSON report written at the end:
 
 - `hotpath.<function path>.time` - average time per call in nanoseconds
+- `hotpath.lock.<name>.wait` / `hotpath.lock.<name>.hold` - average lock wait and hold time in
+  nanoseconds (currently `Session`'s `receiving_key_counter`, acquired once per received packet)
 
 Rust paths keep their shape with `::` mapped to `.` (the measurement ID grammar does not allow
 colons), e.g. `hotpath.gotatun.noise.session.format_packet_data.time`; display labels use the
@@ -39,8 +41,19 @@ short function name, e.g. `format_packet_data time per call (ns)`. The currently
 functions are the per-packet data path: `Tunn::handle_outgoing_packet`,
 `Session::format_packet_data`, `Tunn::handle_incoming_packet`, and
 `Session::receive_packet_data`. More `#[cfg_attr(feature = "hotpath", hotpath::measure)]`
-annotations in the library extend the metric set. The hotpath version is pinned in this workspace
-because the report format may change between releases.
+annotations in the library extend the metric set, and locks join via `hotpath::mutex!` at their
+creation site. hotpath reports locks per instance; instances of one creation site are merged into
+a single metric. The hotpath version is pinned in this workspace because the report format may
+change between releases.
+
+Other hotpath subsystems were evaluated and left out for now: channel profiling
+(`hotpath::channel!` around the `tokio::mpsc` endpoints of `udp::channel`) and the device-level
+tokio locks only carry data in a device-level benchmark, which does not exist yet - the natural
+extension is a third benchmark running two in-process devices wired together with
+`udp::channel::new_udp_tun_channel`. Socket byte-level I/O profiling cannot cover the UDP path:
+the transport uses raw `sendmmsg`/`recvmmsg`, which implement none of the `Read`/`Write`/
+`AsyncRead`/`AsyncWrite` traits `hotpath::io!` wraps. The hotpath-criterion integration requires
+Criterion 0.8 while this workspace pins 0.7, so it needs a criterion upgrade first.
 
 Call counts and allocation bytes are deliberately not recorded: the call count is a constant of
 the workload definition, and the allocation-free data path would only yield constant zeros, so
