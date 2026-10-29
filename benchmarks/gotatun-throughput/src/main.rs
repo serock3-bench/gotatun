@@ -150,10 +150,17 @@ async fn main() -> Result<()> {
 
     match run_controller(&config).await {
         Ok(output) => {
-            recorder.measurement(SENDER_THROUGHPUT, output.iperf.end.sum_sent.bits_per_second)?;
-            recorder.measurement(
+            recorder.iperf_throughput(
+                SENDER_THROUGHPUT,
+                output.iperf.end.sum_sent.bits_per_second,
+                &output.iperf.interval_output,
+                true,
+            )?;
+            recorder.iperf_throughput(
                 RECEIVER_THROUGHPUT,
                 output.iperf.end.sum_received.bits_per_second,
+                &output.iperf.interval_output,
+                false,
             )?;
             recorder.measurement(
                 DOWN_IPERF_CPU,
@@ -237,6 +244,9 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
     let mut iperf_server = Command::new("iperf3")
         .args([
             "--server",
+            "--json",
+            "--interval",
+            "1",
             "--bind",
             &local_args.tunnel_address.to_string(),
             "--port",
@@ -269,6 +279,9 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
                 "--time".to_owned(),
                 config.duration.to_string(),
                 "--json".to_owned(),
+                "--get-server-output".to_owned(),
+                "--interval".to_owned(),
+                "1".to_owned(),
             ],
         );
         let output = checked_output("ssh", [&config.peer, &iperf_command]).await?;
