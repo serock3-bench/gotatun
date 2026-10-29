@@ -326,7 +326,7 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
         .take()
         .ok_or(eyre::eyre!("child stdout was not captured"))?;
     let mut lines = BufReader::new(stdout).lines();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    let pid = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(line) = lines.next_line().await? {
             if let Some(pid) = line.strip_prefix(&format!("{marker} ")) {
                 return Ok::<u32, std::io::Error>(pid.parse().expect("valid pid"));
@@ -338,7 +338,15 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
     })
     .await
     .context("timed out waiting for readiness")?
-    .context("failed to read readiness")
+    .context("failed to read readiness")?;
+    // Keep draining the pipe: dropping the reader closes the child's stdout, and its later
+    // println!s would panic on EPIPE.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            println!("{line}");
+        }
+    });
+    Ok(pid)
 }
 
 /// Starts the iperf3 server on the peer, bound to its tunnel address (which exists once the
