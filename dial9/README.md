@@ -1,7 +1,7 @@
 # Dial9 profiling harness
 
-`gotatun-dial9` profiles Alice's full GotaTun device under TCP iperf: 10 seconds sending to Bob,
-then 10 seconds receiving. Unlike the numeric throughput benchmark, this deliberately exercises
+`gotatun-dial9` profiles Alice's full GotaTun device under TCP iperf: 5 seconds sending to Bob,
+then 5 seconds receiving. Unlike the numeric throughput benchmark, this deliberately exercises
 both directions. The old ping workload has been removed; a short ping readiness probe remains.
 
 The manual **Dial9 profile** workflow runs on the shared benchmark runner and acquires the same
@@ -9,7 +9,7 @@ machine lock as Benchy. It uploads `dial9-traces-<run id>-<attempt>` for 7 days 
 attempt's local traces after upload. It does not publish numbers to Bencher. `run.json` records
 the source commit, workflow run, parameters and success/failure status alongside the trace.
 
-Inputs are `iperf-seconds` (1–60 per direction, default 10) and `cpu-sample-hz` (1–4000, default
+Inputs are `iperf-seconds` (1–60 per direction, default 5) and `cpu-sample-hz` (1–4000, default
 999). More samples and longer runs cost more disk space and profiler overhead. The harness
 caps the rolling buffer at 512 MiB and rejects runs whose early segments were discarded.
 
@@ -55,7 +55,7 @@ Build from this directory so `.cargo/config.toml` enables `tokio_unstable` and f
 ```bash
 cd dial9
 cargo build --locked --profile profiling
-./target/profiling/gotatun-dial9 run --trace-dir ./traces --iperf-seconds 10
+./target/profiling/gotatun-dial9 run --trace-dir ./traces --iperf-seconds 5
 ```
 
 `run` is the unprivileged controller and invokes `tunnel` through passwordless sudo locally.
