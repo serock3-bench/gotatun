@@ -28,6 +28,7 @@ async function main() {
   const markers = [];
   const samples = [];
   const backends = new Set();
+  let tracingEvents = 0;
   for (const file of files) {
     for await (const trace of parseTrace(path.join(directory, file))) {
       assert(!trace.truncated && !trace.incompleteFiles, `${file}: incomplete parser result`);
@@ -38,6 +39,10 @@ async function main() {
       }
       for (const event of trace.customEvents) {
         if (event.name.endsWith('WorkloadEvent')) markers.push(event);
+        if (event.name.endsWith('TracingEventRecord')) {
+          assert(event.fields.level && event.fields.target && event.fields.fields, 'invalid tracing event');
+          tracingEvents++;
+        }
       }
       for (const sample of trace.cpuSamples) {
         if (sample.source !== 0) continue;
@@ -50,6 +55,8 @@ async function main() {
       }
     }
   }
+  assert(tracingEvents > 0, 'no converted tracing events');
+  console.log(`${tracingEvents} converted tracing events with fields and source metadata`);
   assert(markers.some(event => event.fields.phase === 'shutdown'), 'missing orderly tunnel shutdown');
   for (const direction of ['send', 'receive']) {
     const phase = name => markers.filter(event => event.fields.phase === name &&

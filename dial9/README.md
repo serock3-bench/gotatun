@@ -17,8 +17,9 @@ caps the rolling buffer at 512 MiB and rejects runs whose early segments were di
 
 Alice is profiled; Bob runs an unprofiled endpoint. Traces contain CPU stacks, scheduler events,
 sampled allocations and live allocation tracking, process resources, Tokio tasks and tracing
-spans. Explicit `WorkloadEvent` markers bracket each transfer. Ordinary log messages go to
-stderr; packet-level trace logging is off by default to avoid flooding the trace.
+spans. Explicit `WorkloadEvent` markers bracket each transfer. The custom tracing bridge records ordinary events (level, target, fields, span scope and source
+location) alongside the spans; logs also go to stderr. The shared default `info` filter keeps
+packet-level trace logs out of both destinations to avoid flooding the trace.
 
 CPU profiling runs through sudo. Check `cpu.profile.backend` in the trace for the actual backend
 rather than inferring success from sysctl values. Kernel symbolization may require

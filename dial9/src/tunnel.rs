@@ -127,6 +127,7 @@ fn init_tracing() -> Result<()> {
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .with(Dial9TracingLayer::new())
+        .with(crate::tracing_events::TracingEventLayer)
         .try_init()
         .map_err(|error| eyre!("failed to install tracing subscriber: {error}"))
 }
