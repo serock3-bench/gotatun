@@ -31,7 +31,8 @@ async function main() {
   for (const file of files) {
     for await (const trace of parseTrace(path.join(directory, file))) {
       assert(!trace.truncated && !trace.incompleteFiles, `${file}: incomplete parser result`);
-      assert(trace.sealedFiles > 0, `${file}: missing final file seal`);
+      // The pinned rc0 writer predates segment.complete metadata. Honor an explicit
+      // incomplete flag when present; use workload/shutdown markers for older traces.
       for (const [key, value] of trace.segmentMetadata) {
         if (key === 'cpu.profile.backend') backends.add(value);
       }
@@ -49,6 +50,7 @@ async function main() {
       }
     }
   }
+  assert(markers.some(event => event.fields.phase === 'shutdown'), 'missing orderly tunnel shutdown');
   for (const direction of ['send', 'receive']) {
     const phase = name => markers.filter(event => event.fields.phase === name &&
       event.fields.detail.split(', ').includes(`direction=${direction}`));
