@@ -55,6 +55,11 @@ jobs:
           cache: false
       - name: Build the profiling harness
         working-directory: dial9
+        # The toolchain action exports RUSTFLAGS, which overrides dial9/.cargo/config.toml and
+        # would silently drop tokio_unstable and the frame pointers dial9 requires. Keep the
+        # action's -D warnings on top of the config flags.
+        env:
+          RUSTFLAGS: --cfg tokio_unstable -C force-frame-pointers=yes -D warnings
         run: cargo build --locked --profile profiling
       - name: Report CPU profiling permissions
         run: |
@@ -87,6 +92,6 @@ jobs:
           if-no-files-found: error
       - name: Free the runner disk
         if: ${{ always() }}
-        env:
-          TRACE_DIR: ${{ runner.temp }}/dial9-traces-${{ github.run_id }}
-        run: rm -rf "$TRACE_DIR"
+        # The tunnel writes the traces as root, so the cleanup needs sudo; also sweep
+        # leftovers of runs whose own cleanup could not run.
+        run: sudo -n rm -rf "${{ runner.temp }}"/dial9-traces-*

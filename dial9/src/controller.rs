@@ -27,13 +27,13 @@ const REMOTE_DIR_PREFIX: &str = "benchy-dial9";
 
 #[derive(Debug, ClapArgs)]
 pub struct RunArgs {
-    #[arg(long, env = "BENCHY_PEER", default_value = "mole@10.0.0.2")]
+    #[arg(long, default_value = "mole@10.0.0.2")]
     peer: String,
-    #[arg(long, env = "BENCHY_ALICE_ADDRESS", default_value = "10.0.0.1")]
+    #[arg(long, default_value = "10.0.0.1")]
     alice_address: IpAddr,
-    #[arg(long, env = "BENCHY_BOB_ADDRESS", default_value = "10.0.0.2")]
+    #[arg(long, default_value = "10.0.0.2")]
     bob_address: IpAddr,
-    #[arg(long, env = "BENCHY_WIREGUARD_PORT", default_value_t = 51821)]
+    #[arg(long, default_value_t = 51821)]
     listen_port: u16,
     /// The peer machine's listen port, when it differs from ours.
     #[arg(long)]
@@ -82,7 +82,11 @@ struct KeyMaterial {
 }
 
 #[tokio::main]
-pub async fn run(args: RunArgs) -> Result<()> {
+pub async fn run(mut args: RunArgs) -> Result<()> {
+    // The workflow passes the BENCHY_* variables from GitHub vars, which arrive empty when
+    // they are not visible to the repository. Empty must not beat the defaults - the
+    // throughput benchmark's env_value filters them the same way.
+    override_from_env(&mut args);
     // Benchmark and profiling runs share the controller host and the peer machine.
     let _machine_lock = MachineLock::acquire("/tmp/benchy.lock")?;
 
@@ -96,6 +100,35 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let outcome = orchestrate(&args, &keys, &remote_executable, &remote_dir).await;
     cleanup(&args.peer, &remote_dir).await;
     outcome
+}
+
+fn override_from_env(args: &mut RunArgs) {
+    if let Ok(peer) = std::env::var("BENCHY_PEER") {
+        if !peer.is_empty() {
+            args.peer = peer;
+        }
+    }
+    if let Ok(address) = std::env::var("BENCHY_ALICE_ADDRESS") {
+        if let Ok(address) = address.parse::<IpAddr>() {
+            if !address.is_unspecified() {
+                args.alice_address = address;
+            }
+        }
+    }
+    if let Ok(address) = std::env::var("BENCHY_BOB_ADDRESS") {
+        if let Ok(address) = address.parse::<IpAddr>() {
+            if !address.is_unspecified() {
+                args.bob_address = address;
+            }
+        }
+    }
+    if let Ok(port) = std::env::var("BENCHY_WIREGUARD_PORT") {
+        if let Ok(port) = port.parse::<u16>() {
+            if port != 0 {
+                args.listen_port = port;
+            }
+        }
+    }
 }
 
 fn generate_keys() -> KeyMaterial {
@@ -183,7 +216,6 @@ fn endpoint_values(
     peer_port: u16,
 ) -> Vec<String> {
     [
-        "endpoint".to_owned(),
         "--interface".to_owned(),
         args.interface.clone(),
         "--private-key".to_owned(),
@@ -265,7 +297,10 @@ async fn spawn_remote_endpoint(
 
 fn spawn_local_tunnel(values: &[String]) -> Result<Option<Child>> {
     let mut command = Command::new("sudo");
-    command.arg("-n").arg(std::env::current_exe()?);
+    command
+        .arg("-n")
+        .arg(std::env::current_exe()?)
+        .arg("tunnel");
     for value in values {
         command.arg(value);
     }
@@ -291,7 +326,7 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
         .take()
         .ok_or(eyre::eyre!("child stdout was not captured"))?;
     let mut lines = BufReader::new(stdout).lines();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    let pid = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(line) = lines.next_line().await? {
             if let Some(pid) = line.strip_prefix(&format!("{marker} ")) {
                 return Ok::<u32, std::io::Error>(pid.parse().expect("valid pid"));
@@ -303,7 +338,15 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
     })
     .await
     .context("timed out waiting for readiness")?
-    .context("failed to read readiness")
+    .context("failed to read readiness")?;
+    // Keep draining the pipe: dropping the reader closes the child's stdout, and its later
+    // println!s would panic on EPIPE.
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            println!("{line}");
+        }
+    });
+    Ok(pid)
 }
 
 /// Starts the iperf3 server on the peer, bound to its tunnel address (which exists once the
@@ -396,11 +439,21 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use super::{remote_command_of, shell_quote};
 
     #[test]
     fn shell_arguments_are_single_quoted() {
         assert_eq!(shell_quote("plain"), "'plain'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn remote_commands_carry_the_subcommand_exactly_once() {
+        let values = ["--interface".to_owned(), "d9gotatunb".to_owned()];
+        let command = remote_command_of("/tmp/remote/gotatun-dial9", "endpoint", &values);
+        assert_eq!(
+            command,
+            "/tmp/remote/gotatun-dial9 endpoint '--interface' 'd9gotatunb'"
+        );
     }
 }
