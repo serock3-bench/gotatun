@@ -92,6 +92,6 @@ jobs:
           if-no-files-found: error
       - name: Free the runner disk
         if: ${{ always() }}
-        env:
-          TRACE_DIR: ${{ runner.temp }}/dial9-traces-${{ github.run_id }}
-        run: rm -rf "$TRACE_DIR"
+        # The tunnel writes the traces as root, so the cleanup needs sudo; also sweep
+        # leftovers of runs whose own cleanup could not run.
+        run: sudo -n rm -rf "${{ runner.temp }}"/dial9-traces-*
