@@ -76,9 +76,6 @@ zerocopy = { workspace = true, features = ["derive", "std"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
-# Profiling adapter for the criterion benches; without the `hotpath` feature
-# (or without HOTPATH_CRITERION_ITERATIONS) the benches behave exactly as before.
-hotpath = { workspace = true, features = ["criterion-0-8"] }
 etherparse = { workspace = true }
 hex = { workspace = true }
 test-log = { workspace = true }

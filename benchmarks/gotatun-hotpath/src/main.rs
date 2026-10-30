@@ -23,8 +23,12 @@ const DEFINITION: BenchmarkDefinition = BenchmarkDefinition {
     description: "GotaTun data-path profile of the noise functions measured with hotpath-rs",
 };
 
+#[global_allocator]
+static ALLOCATOR: hotpath::CountingAllocator = hotpath::CountingAllocator::new();
+
 const HANDSHAKE_RATE_LIMIT: u64 = 100;
-const PACKETS_PER_DIRECTION: usize = 20_000;
+const PACKETS_PER_DIRECTION: usize = 200_000;
+const WARMUP_PACKETS_PER_DIRECTION: usize = 10_000;
 const PAYLOAD_LEN: usize = 1200;
 
 #[derive(Parser)]
@@ -44,31 +48,54 @@ async fn main() -> Result<()> {
     // Keep the data-path machines exclusive: a concurrent tunnel run would skew the timings.
     let _machine_lock = MachineLock::acquire("/tmp/benchy.lock")?;
 
-    // The report lives outside any result directory: export-bencher treats every JSON file
-    // there as a benchmark result.
-    let report_path = std::env::temp_dir().join("gotatun-hotpath-report.json");
-
-    let result = {
-        // The guard's drop writes the hotpath report once the data path has run.
-        let _hotpath_guard = hotpath::HotpathGuardBuilder::new("gotatun-hotpath")
-            .format(hotpath::Format::Json)
-            .output_path(&report_path)
-            .build();
-        run_data_path()
-    };
-
+    // Keep the raw profile next to the result, under a subdirectory ignored by the exporter.
+    let report_dir = output
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("profiles");
+    tokio::fs::create_dir_all(&report_dir).await?;
+    let report_path = report_dir.join("gotatun-hotpath.json");
     let mut recorder = Recorder::new(DEFINITION, &output).await;
     recorder.parameter("packets_per_direction", PACKETS_PER_DIRECTION);
+    recorder.parameter("warmup_packets_per_direction", WARMUP_PACKETS_PER_DIRECTION);
     recorder.parameter("payload_len", PAYLOAD_LEN);
+    recorder.parameter("aead_backend", "ring");
+    recorder.parameter("hotpath_version", "0.30.1");
+    recorder.parameter(
+        "profiling",
+        "inclusive timing and exclusive allocation bytes; serial locks",
+    );
+    recorder.parameter("lock_scope", "handshake, warmup and measured packets");
+    recorder.parameter("profile", "profiles/gotatun-hotpath.json");
+    let result = run_data_path(&report_path).and_then(|()| {
+        let report = std::fs::read(&report_path)
+            .with_context(|| format!("failed to read {}", report_path.display()))?;
+        let parsed = benchy_runner::hotpath::parse_hotpath_report(&report)?;
+        let timing = parsed
+            .functions_timing
+            .as_ref()
+            .context("missing function timings")?;
+        for name in [
+            "handle_outgoing_packet",
+            "format_packet_data",
+            "handle_incoming_packet",
+            "receive_packet_data",
+        ] {
+            anyhow::ensure!(
+                timing.data.iter().any(|entry| entry.name.ends_with(name)
+                    && entry.calls == 2 * PACKETS_PER_DIRECTION as u64),
+                "missing or incorrect call count for {name}"
+            );
+        }
+        anyhow::ensure!(
+            parsed.functions_alloc.is_some(),
+            "missing allocation measurements"
+        );
+        record_hotpath_report(&mut recorder, None, &report)
+    });
 
     match result {
-        Ok(()) => {
-            let report = tokio::fs::read(&report_path)
-                .await
-                .with_context(|| format!("failed to read {}", report_path.display()))?;
-            record_hotpath_report(&mut recorder, None, &report)?;
-            recorder.success().await
-        }
+        Ok(()) => recorder.success().await,
         Err(error) => {
             recorder.failure(&error).await?;
             Err(error)
@@ -78,7 +105,7 @@ async fn main() -> Result<()> {
 
 /// Exchanges packets through both tunnel directions between two in-process tunnels: no TUN
 /// devices, network, or privileges, so the measurements isolate the noise data path.
-fn run_data_path() -> Result<()> {
+fn run_data_path(report_path: &std::path::Path) -> Result<()> {
     let make_tunn = |private: StaticSecret, peer_public: PublicKey| {
         let public = PublicKey::from(&private);
         let rate_limiter = Arc::new(RateLimiter::new(&public, HANDSHAKE_RATE_LIMIT));
@@ -131,7 +158,7 @@ fn run_data_path() -> Result<()> {
         result => bail!("handshake did not complete: {result:?}"),
     }
 
-    for _ in 0..PACKETS_PER_DIRECTION {
+    let mut exchange = || -> Result<()> {
         // The packet buffers are consumed by encapsulation, so every iteration needs a fresh
         // copy of the template.
         let packet = Packet::from_bytes(BytesMut::from(&packet_template[..]));
@@ -161,6 +188,20 @@ fn run_data_path() -> Result<()> {
             }
             result => bail!("failed to decapsulate a packet: {result:?}"),
         }
+        Ok(())
+    };
+    for _ in 0..WARMUP_PACKETS_PER_DIRECTION {
+        exchange()?;
+    }
+    // Handshake and warmup are outside the measured region. Sampling is explicit so local
+    // environment settings cannot silently change the profiling mode.
+    let _guard = hotpath::HotpathGuardBuilder::new("gotatun-hotpath")
+        .format(hotpath::Format::Json)
+        .time_sampling_rate(1.0)
+        .output_path(report_path)
+        .build();
+    for _ in 0..PACKETS_PER_DIRECTION {
+        exchange()?;
     }
     Ok(())
 }

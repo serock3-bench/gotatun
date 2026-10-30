@@ -53,22 +53,13 @@ pub struct RunArgs {
     /// Directory the profiled tunnel writes dial9 trace segments to.
     #[arg(long, default_value = "dial9-traces")]
     trace_dir: std::path::PathBuf,
-    #[arg(long, default_value_t = 100)]
-    ping_count: u16,
-    #[arg(long, default_value_t = 10)]
-    ping_interval_ms: u16,
-    #[arg(long, default_value_t = 56)]
-    ping_payload_bytes: u16,
-    #[arg(long, default_value_t = 999)]
+    #[arg(long, default_value_t = 999, value_parser = clap::value_parser!(u64).range(1..=4000))]
     cpu_sample_hz: u64,
-    /// Workload to record after the tunnel comes up.
-    #[arg(long, value_enum, default_value_t = crate::tunnel::Workload::Ping)]
-    workload: crate::tunnel::Workload,
     /// Seconds per iperf3 direction (send and receive each).
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=60))]
     iperf_seconds: u16,
     /// Port of the iperf3 server started on the peer.
-    #[arg(long, default_value_t = 5201)]
+    #[arg(long, default_value_t = 5209)]
     iperf_port: u16,
 }
 
@@ -86,7 +77,7 @@ pub async fn run(mut args: RunArgs) -> Result<()> {
     // The workflow passes the BENCHY_* variables from GitHub vars, which arrive empty when
     // they are not visible to the repository. Empty must not beat the defaults - the
     // throughput benchmark's env_value filters them the same way.
-    override_from_env(&mut args);
+    override_from_env(&mut args)?;
     // Benchmark and profiling runs share the controller host and the peer machine.
     let _machine_lock = MachineLock::acquire("/tmp/benchy.lock")?;
 
@@ -96,39 +87,71 @@ pub async fn run(mut args: RunArgs) -> Result<()> {
     let remote_dir = format!("/tmp/{REMOTE_DIR_PREFIX}-{run_id}");
     let remote_executable = format!("{remote_dir}/gotatun-dial9");
 
-    deploy(&args.peer, &executable, &remote_dir, &remote_executable).await?;
-    let outcome = orchestrate(&args, &keys, &remote_executable, &remote_dir).await;
+    tokio::fs::create_dir_all(&args.trace_dir).await?;
+    if tokio::fs::read_dir(&args.trace_dir)
+        .await?
+        .next_entry()
+        .await?
+        .is_some()
+    {
+        bail!(
+            "trace directory must be empty: {}",
+            args.trace_dir.display()
+        );
+    }
+    let manifest_path = args.trace_dir.join("run.json");
+    let sha = std::env::var("GITHUB_SHA").ok().or_else(|| {
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    });
+    let mut manifest = serde_json::json!({
+        "schema_version": 1, "source_sha": sha, "run_id": std::env::var("GITHUB_RUN_ID").ok(),
+        "run_attempt": std::env::var("GITHUB_RUN_ATTEMPT").ok(), "status": "running",
+        "profiled_host": "alice", "directions": ["send", "receive"],
+        "seconds_per_direction": args.iperf_seconds, "cpu_sample_hz": args.cpu_sample_hz,
+        "mtu": args.mtu, "aead_backend": "ring", "trace_limit_mib": 512
+    });
+    tokio::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?).await?;
+    let outcome = async {
+        deploy(&args.peer, &executable, &remote_dir, &remote_executable).await?;
+        orchestrate(&args, &keys, &remote_executable).await?;
+        verify_trace_files(&args.trace_dir).await
+    }
+    .await;
     cleanup(&args.peer, &remote_dir).await;
+    manifest["status"] = serde_json::json!(if outcome.is_ok() { "success" } else { "failed" });
+    tokio::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest)?).await?;
     outcome
 }
 
-fn override_from_env(args: &mut RunArgs) {
-    if let Ok(peer) = std::env::var("BENCHY_PEER") {
-        if !peer.is_empty() {
-            args.peer = peer;
-        }
+fn override_from_env(args: &mut RunArgs) -> Result<()> {
+    let value = |key| std::env::var(key).ok().filter(|value| !value.is_empty());
+    if let Some(peer) = value("BENCHY_PEER") {
+        args.peer = peer;
     }
-    if let Ok(address) = std::env::var("BENCHY_ALICE_ADDRESS") {
-        if let Ok(address) = address.parse::<IpAddr>() {
-            if !address.is_unspecified() {
-                args.alice_address = address;
+    for (key, destination) in [
+        ("BENCHY_ALICE_ADDRESS", &mut args.alice_address),
+        ("BENCHY_BOB_ADDRESS", &mut args.bob_address),
+    ] {
+        if let Some(address) = value(key) {
+            let address: IpAddr = address.parse().with_context(|| format!("invalid {key}"))?;
+            if address.is_unspecified() {
+                bail!("{key} must be a concrete host address");
             }
+            *destination = address;
         }
     }
-    if let Ok(address) = std::env::var("BENCHY_BOB_ADDRESS") {
-        if let Ok(address) = address.parse::<IpAddr>() {
-            if !address.is_unspecified() {
-                args.bob_address = address;
-            }
+    if let Some(port) = value("BENCHY_WIREGUARD_PORT") {
+        args.listen_port = port.parse().context("invalid BENCHY_WIREGUARD_PORT")?;
+        if args.listen_port == 0 {
+            bail!("BENCHY_WIREGUARD_PORT must be nonzero");
         }
     }
-    if let Ok(port) = std::env::var("BENCHY_WIREGUARD_PORT") {
-        if let Ok(port) = port.parse::<u16>() {
-            if port != 0 {
-                args.listen_port = port;
-            }
-        }
-    }
+    Ok(())
 }
 
 fn generate_keys() -> KeyMaterial {
@@ -145,64 +168,78 @@ fn generate_keys() -> KeyMaterial {
     }
 }
 
-async fn orchestrate(
-    args: &RunArgs,
-    keys: &KeyMaterial,
-    remote_executable: &str,
-    remote_dir: &str,
-) -> Result<()> {
+async fn orchestrate(args: &RunArgs, keys: &KeyMaterial, remote_executable: &str) -> Result<()> {
     let peer_port = args.peer_port.unwrap_or(args.listen_port);
+    let mut processes: Vec<OwnedProcess> = Vec::new();
+    let run = async {
+        let remote = spawn_remote_endpoint(
+            &args.peer,
+            remote_executable,
+            &endpoint_values(
+                args,
+                &keys.bob_private_hex,
+                &keys.alice_public,
+                &keys.preshared_key_hex,
+                peer_port,
+            ),
+        )
+        .await?;
+        processes.push(OwnedProcess::new(remote, Some(&args.peer)));
+        let remote = processes.last_mut().unwrap();
+        remote.pid = Some(
+            wait_ready(&mut remote.child, "DIAL9_ENDPOINT_READY")
+                .await
+                .context("remote endpoint failed to start")?,
+        );
 
-    let mut remote = spawn_remote_endpoint(
-        &args.peer,
-        remote_executable,
-        &endpoint_values(
-            args,
-            &keys.bob_private_hex,
-            &keys.alice_public,
-            &keys.preshared_key_hex,
-            peer_port,
-        ),
-    )
-    .await?;
-    let remote_pid = wait_ready(&mut remote, "DIAL9_ENDPOINT_READY")
-        .await
-        .context("remote endpoint failed to start")?;
+        let server =
+            spawn_remote_iperf_server(&args.peer, args.peer_tunnel_address, args.iperf_port)?;
+        processes.push(OwnedProcess::new(server, Some(&args.peer)));
+        let server = processes.last_mut().unwrap();
+        server.pid = Some(wait_ready(&mut server.child, "DIAL9_IPERF_PID").await?);
+        wait_iperf_ready(server, args.peer_tunnel_address, args.iperf_port).await?;
 
-    let iperf = match args.workload {
-        crate::tunnel::Workload::Ping => None,
-        crate::tunnel::Workload::Iperf => {
-            let server =
-                spawn_remote_iperf_server(&args.peer, args.peer_tunnel_address, args.iperf_port)
-                    .await?;
-            Some(server)
+        let tunnel = spawn_local_tunnel(&tunnel_values(args, keys, peer_port))?;
+        processes.push(OwnedProcess::new(tunnel, None));
+        let tunnel = processes.last_mut().unwrap();
+        tunnel.pid = Some(
+            wait_ready(&mut tunnel.child, "DIAL9_TUNNEL_READY")
+                .await
+                .context("profiled tunnel failed to start")?,
+        );
+
+        let status = tunnel
+            .child
+            .wait()
+            .await
+            .context("failed to wait for the profiled tunnel")?;
+        if !status.success() {
+            bail!("the profiled tunnel exited with {status}");
+        }
+        Ok(())
+    };
+    let outcome = tokio::select! {
+        result = run => result,
+        signal = tokio::signal::ctrl_c() => {
+            match signal {
+                Ok(()) => Err(eyre::eyre!("profiling interrupted")),
+                Err(error) => Err(error).context("failed to listen for Ctrl-C"),
+            }
         }
     };
-
-    let tunnel = spawn_local_tunnel(&tunnel_values(args, keys, peer_port))?;
-    // The tunnel is a root child; the controller only shepherds it.
-    let mut tunnel = match tunnel {
-        Some(child) => child,
-        None => bail!("failed to spawn the profiled tunnel"),
-    };
-    wait_ready(&mut tunnel, "DIAL9_TUNNEL_READY")
-        .await
-        .context("profiled tunnel failed to start")?;
-
-    let status = tunnel
-        .wait()
-        .await
-        .context("failed to wait for the profiled tunnel")?;
-    if let Some(mut iperf) = iperf {
-        let _ = iperf.start_kill();
+    let mut cleanup_error = None;
+    for process in processes.iter_mut().rev() {
+        if let Err(error) = process.stop().await {
+            eprintln!("process cleanup failed: {error:#}");
+            cleanup_error = Some(error);
+        }
     }
-    stop_remote_endpoint(&args.peer, remote_pid).await;
-
-    if !status.success() {
-        bail!("the profiled tunnel exited with {status}");
+    outcome?;
+    if let Some(error) = cleanup_error {
+        return Err(error);
     }
     println!(
-        "profiling run finished; traces in {}; peer cleanup done in {remote_dir}",
+        "profiling run finished; traces in {}; owned processes stopped",
         args.trace_dir.display()
     );
     Ok(())
@@ -234,6 +271,8 @@ fn endpoint_values(
         peer_port.to_string(),
         "--mtu".to_owned(),
         args.mtu.to_string(),
+        "--lease-seconds".to_owned(),
+        (u64::from(args.iperf_seconds) * 2 + 90).to_string(),
     ]
     .to_vec()
 }
@@ -260,16 +299,8 @@ fn tunnel_values(args: &RunArgs, keys: &KeyMaterial, peer_port: u16) -> Vec<Stri
         args.mtu.to_string(),
         "--trace-dir".to_owned(),
         args.trace_dir.to_string_lossy().into_owned(),
-        "--ping-count".to_owned(),
-        args.ping_count.to_string(),
-        "--ping-interval-ms".to_owned(),
-        args.ping_interval_ms.to_string(),
-        "--ping-payload-bytes".to_owned(),
-        args.ping_payload_bytes.to_string(),
         "--cpu-sample-hz".to_owned(),
         args.cpu_sample_hz.to_string(),
-        "--workload".to_owned(),
-        format!("{:?}", args.workload).to_lowercase(),
         "--iperf-seconds".to_owned(),
         args.iperf_seconds.to_string(),
         "--iperf-port".to_owned(),
@@ -295,7 +326,7 @@ async fn spawn_remote_endpoint(
         .with_context(|| format!("failed to start the remote endpoint on {peer}"))
 }
 
-fn spawn_local_tunnel(values: &[String]) -> Result<Option<Child>> {
+fn spawn_local_tunnel(values: &[String]) -> Result<Child> {
     let mut command = Command::new("sudo");
     command
         .arg("-n")
@@ -310,7 +341,7 @@ fn spawn_local_tunnel(values: &[String]) -> Result<Option<Child>> {
         .kill_on_drop(true)
         .spawn()
         .context("failed to start the profiled tunnel through sudo")?;
-    Ok(Some(child))
+    Ok(child)
 }
 
 fn remote_command_of(executable: &str, subcommand: &str, values: &[String]) -> String {
@@ -329,7 +360,7 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
     let pid = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(line) = lines.next_line().await? {
             if let Some(pid) = line.strip_prefix(&format!("{marker} ")) {
-                return Ok::<u32, std::io::Error>(pid.parse().expect("valid pid"));
+                return pid.parse::<u32>().map_err(std::io::Error::other);
             }
         }
         Err(std::io::Error::other(
@@ -349,31 +380,148 @@ async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
     Ok(pid)
 }
 
-/// Starts the iperf3 server on the peer, bound to its tunnel address (which exists once the
-/// endpoint is up). The server is tied to this ssh child: aborting it tears the ssh session
-/// down, which closes the remote iperf3.
-async fn spawn_remote_iperf_server(
+/// Echo the exec'd process's PID so cleanup targets this run's server, never an unrelated one.
+fn spawn_remote_iperf_server(
     peer: &str,
     bind: Ipv4Addr,
     port: u16,
 ) -> Result<tokio::process::Child> {
-    let command = format!("iperf3 --server --bind {bind} --port {port}");
+    let command = format!(
+        "sh -c {}",
+        shell_quote(&format!(
+            "echo DIAL9_IPERF_PID $$; exec iperf3 --server --bind {bind} --port {port}"
+        ))
+    );
     let child = Command::new("ssh")
         .arg(peer)
         .arg(command)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("failed to start the iperf3 server on {peer}"))?;
-    // Give the server a moment to bind before the client races it.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     Ok(child)
 }
 
-async fn stop_remote_endpoint(peer: &str, pid: u32) {
-    let command = remote_command_of("sudo", "kill", &["-INT".to_owned(), pid.to_string()]);
-    let _ = Command::new("ssh").arg(peer).arg(command).output().await;
+async fn wait_iperf_ready(process: &mut OwnedProcess, bind: Ipv4Addr, port: u16) -> Result<()> {
+    for _ in 0..20 {
+        if let Some(status) = process.child.try_wait()? {
+            bail!("our iperf server exited before listening: {status}");
+        }
+        let output = checked_output(
+            "ssh",
+            [
+                process.peer.clone().unwrap(),
+                format!("ss -H -ltnp 'sport = :{port}'"),
+            ],
+        )
+        .await?;
+        let listeners = String::from_utf8_lossy(&output.stdout);
+        if listener_is_owned(&listeners, bind, port, process.pid.unwrap()) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    bail!("our iperf server did not bind {bind}:{port}; refusing to use another listener")
+}
+
+fn listener_is_owned(output: &str, bind: Ipv4Addr, port: u16, pid: u32) -> bool {
+    output.lines().any(|line| {
+        line.split_whitespace()
+            .any(|field| field == format!("{bind}:{port}"))
+            && line.contains(&format!("pid={pid},"))
+    })
+}
+
+struct OwnedProcess {
+    child: Child,
+    peer: Option<String>,
+    pid: Option<u32>,
+}
+
+impl OwnedProcess {
+    fn new(child: Child, peer: Option<&str>) -> Self {
+        Self {
+            child,
+            peer: peer.map(str::to_owned),
+            pid: None,
+        }
+    }
+
+    async fn signal(&self, signal: &str) -> Result<()> {
+        let pid = self
+            .pid
+            .or_else(|| self.peer.is_none().then(|| self.child.id()).flatten());
+        if let Some(pid) = pid {
+            let values = [
+                "-n".to_owned(),
+                "kill".to_owned(),
+                signal.to_owned(),
+                pid.to_string(),
+            ];
+            let mut command = if let Some(peer) = &self.peer {
+                let mut command = Command::new("ssh");
+                command.arg(peer).arg(format!(
+                    "sudo {}",
+                    values
+                        .iter()
+                        .map(|s| shell_quote(s))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+                command
+            } else {
+                let mut command = Command::new("sudo");
+                command.args(values);
+                command
+            };
+            let _ = command.output().await?;
+        }
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> Result<()> {
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        self.signal("-INT").await?;
+        match tokio::time::timeout(std::time::Duration::from_secs(8), self.child.wait()).await {
+            Ok(status) => {
+                status?;
+            }
+            Err(_) => {
+                self.signal("-KILL").await?;
+                self.child.kill().await?;
+                bail!("owned process did not stop gracefully");
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn verify_trace_files(directory: &Path) -> Result<()> {
+    let mut entries = tokio::fs::read_dir(directory).await?;
+    let mut indices = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(index) = name
+            .strip_prefix("trace.")
+            .and_then(|s| s.strip_suffix(".bin.gz").or_else(|| s.strip_suffix(".bin")))
+        {
+            indices.push(
+                index
+                    .parse::<usize>()
+                    .context("invalid trace segment name")?,
+            );
+        }
+    }
+    indices.sort_unstable();
+    if indices.is_empty() || indices.iter().copied().ne(0..indices.len()) {
+        bail!(
+            "trace segments are missing or were rolled out of the buffer: {indices:?}; lower event volume or shorten the run"
+        );
+    }
+    Ok(())
 }
 
 async fn deploy(
@@ -439,7 +587,7 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{remote_command_of, shell_quote};
+    use super::{listener_is_owned, remote_command_of, shell_quote, verify_trace_files};
 
     #[test]
     fn shell_arguments_are_single_quoted() {
@@ -455,5 +603,48 @@ mod tests {
             command,
             "/tmp/remote/gotatun-dial9 endpoint '--interface' 'd9gotatunb'"
         );
+    }
+
+    #[test]
+    fn readiness_requires_our_process_and_bound_address() {
+        let line = "LISTEN 0 4096 10.0.1.2:5209 0.0.0.0:* users:((\"iperf3\",pid=1234,fd=3))";
+        assert!(listener_is_owned(
+            line,
+            "10.0.1.2".parse().unwrap(),
+            5209,
+            1234
+        ));
+        assert!(!listener_is_owned(
+            line,
+            "10.0.1.2".parse().unwrap(),
+            5209,
+            123
+        ));
+        assert!(!listener_is_owned(
+            line,
+            "10.0.1.1".parse().unwrap(),
+            5209,
+            1234
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_traces_with_rolled_out_or_missing_segments() {
+        let dir = std::env::temp_dir().join(format!("dial9-segments-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        assert!(verify_trace_files(&dir).await.is_err());
+        tokio::fs::write(dir.join("trace.1.bin.gz"), b"test")
+            .await
+            .unwrap();
+        assert!(verify_trace_files(&dir).await.is_err());
+        tokio::fs::write(dir.join("trace.0.bin.gz"), b"test")
+            .await
+            .unwrap();
+        assert!(verify_trace_files(&dir).await.is_ok());
+        tokio::fs::write(dir.join("trace.3.bin.gz"), b"test")
+            .await
+            .unwrap();
+        assert!(verify_trace_files(&dir).await.is_err());
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 }

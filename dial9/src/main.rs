@@ -8,7 +8,7 @@
 //! ephemeral WireGuard pair with the peer machine, starts the profiled tunnel here through
 //! sudo, and leaves dial9 trace segments on disk for upload. `endpoint` is the plain far-side
 //! tunnel spawned on the peer over ssh. `tunnel` is the profiled near side, run as root by
-//! `run`, which owns the dial9 recorder and the ping workload.
+//! `run`, which owns the dial9 recorder and the iperf workload.
 
 mod controller;
 mod endpoint;
