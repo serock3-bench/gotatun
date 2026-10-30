@@ -3,6 +3,8 @@ name: Benchmarks
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 1 * * *'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -23,9 +25,9 @@ permissions:
 
 jobs:
   benchmark:
-    uses: Serock3/benchy/.github/workflows/run-benchmarks.yml@ec4435b1a585f67d7509aa481d418e434bfc3075
+    uses: Serock3/benchy/.github/workflows/run-benchmarks.yml@8c5d2c073cae5bcaadd30740ba8ebcdb93c40783
     with:
       benchmarks: ${{ inputs.benchmarks || 'default' }}
       iterations: ${{ fromJSON(format('{0}', inputs.iterations || 1)) }}
       manifest-path: benchmarks/Cargo.toml
-      framework-ref: ec4435b1a585f67d7509aa481d418e434bfc3075
+      framework-ref: 8c5d2c073cae5bcaadd30740ba8ebcdb93c40783

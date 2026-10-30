@@ -950,6 +950,7 @@ dependencies = [
  "ipnetwork",
  "libc",
  "rand",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1014,9 +1015,9 @@ dependencies = [
 
 [[package]]
 name = "hotpath-macros"
-version = "0.30.1"
+version = "0.30.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a76e0af911930fc97abc766b393b48cdca77fea9f5f6b388cf2123a6d9c30deb"
+checksum = "a24f5179ff680132003306354efd0ac8cde12e87b1a788719c836e91af35cb58"
 
 [[package]]
 name = "ident_case"

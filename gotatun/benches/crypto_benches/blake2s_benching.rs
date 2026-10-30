@@ -11,8 +11,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use blake2::digest::{FixedOutput, KeyInit};
 use blake2::{Blake2s256, Blake2sMac, Digest};
-use criterion::Throughput;
-use hotpath::criterion::{BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use rand::{TryRngCore, rngs::OsRng};
 
 pub fn bench_blake2s_hash(c: &mut Criterion) {

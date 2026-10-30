@@ -4,7 +4,7 @@
 
 //! The profiled near-side tunnel, run as root by `gotatun-dial9 run` through sudo. Everything
 //! below the recorder setup runs inside the dial9-instrumented Tokio runtime: the gotatun
-//! device, the TUN interface, the ping workload, and the teardown.
+//! device, the TUN interface, the iperf workload, and the teardown.
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -41,15 +41,6 @@ static ALLOCATOR: Dial9Allocator = Dial9Allocator::system();
 const SOCKET_BUFFER_SIZE: usize = 7 * 1024 * 1024;
 const READY_MARKER: &str = "DIAL9_TUNNEL_READY";
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
-pub enum Workload {
-    /// ICMP echo requests through the tunnel (the original quiet workload).
-    Ping,
-    /// iperf3 through the tunnel, sending first and then receiving, for a line-rate
-    /// workload that keeps the data path hot in the CPU samples.
-    Iperf,
-}
-
 #[derive(Debug, ClapArgs)]
 pub struct TunnelArgs {
     #[arg(long, default_value = "d9gotatun0", value_parser = crate::util::validate_interface_name)]
@@ -73,22 +64,13 @@ pub struct TunnelArgs {
     /// Directory where dial9 trace segments are written.
     #[arg(long, default_value = "dial9-traces")]
     trace_dir: PathBuf,
-    #[arg(long, default_value_t = 100)]
-    ping_count: u16,
-    #[arg(long, default_value_t = 10)]
-    ping_interval_ms: u16,
-    #[arg(long, default_value_t = 56)]
-    ping_payload_bytes: u16,
-    #[arg(long, default_value_t = 999)]
+    #[arg(long, default_value_t = 999, value_parser = clap::value_parser!(u64).range(1..=4000))]
     cpu_sample_hz: u64,
-    /// Workload to record after the tunnel comes up.
-    #[arg(long, value_enum, default_value_t = Workload::Ping)]
-    workload: Workload,
     /// Seconds per iperf3 direction (send and receive each).
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=60))]
     iperf_seconds: u16,
     /// Port of the iperf3 server on the peer.
-    #[arg(long, default_value_t = 5201)]
+    #[arg(long, default_value_t = 5209)]
     iperf_port: u16,
 }
 
@@ -104,7 +86,7 @@ pub fn run(args: TunnelArgs) -> Result<()> {
 
     let writer = DiskBuffer::builder()
         .base_path(&args.trace_dir)
-        .max_total_size(128 * 1024 * 1024)
+        .max_total_size(512 * 1024 * 1024)
         .max_file_size(64 * 1024 * 1024)
         .rotation_period(Duration::from_secs(60))
         .build()
@@ -139,14 +121,12 @@ pub fn run(args: TunnelArgs) -> Result<()> {
 fn init_tracing() -> Result<()> {
     use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("gotatun=trace,gotatun_dial9=debug,info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     // Logs go to stderr; stdout carries only the readiness marker and workload lines.
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .with(Dial9TracingLayer::new())
-        .with(crate::tracing_events::TracingEventLayer)
         .try_init()
         .map_err(|error| eyre!("failed to install tracing subscriber: {error}"))
 }
@@ -190,26 +170,12 @@ async fn run_profiled(args: TunnelArgs) -> Result<()> {
     println!("{READY_MARKER} {}", std::process::id());
 
     wait_for_tunnel(&args.interface, args.peer_tunnel_address).await?;
-    let workload_result = match args.workload {
-        Workload::Ping => {
-            run_ping(
-                &args.interface,
-                args.peer_tunnel_address,
-                args.ping_count,
-                args.ping_interval_ms,
-                args.ping_payload_bytes,
-            )
-            .await
-        }
-        Workload::Iperf => {
-            run_iperf(
-                args.peer_tunnel_address,
-                args.iperf_seconds,
-                args.iperf_port,
-            )
-            .await
-        }
-    };
+    let workload_result = run_iperf(
+        args.peer_tunnel_address,
+        args.iperf_seconds,
+        args.iperf_port,
+    )
+    .await;
 
     for peer in device.peers().await {
         tracing::info!(
@@ -305,83 +271,6 @@ async fn wait_for_tunnel(interface: &str, target: Ipv4Addr) -> Result<()> {
         sleep(Duration::from_millis(500)).await;
     }
     bail!("tunnel did not become ready");
-}
-
-async fn run_ping(
-    interface: &str,
-    target: Ipv4Addr,
-    count: u16,
-    interval_ms: u16,
-    payload_bytes: u16,
-) -> Result<()> {
-    let interval = format!("{:.3}", f64::from(interval_ms) / 1_000.0);
-    let count = count.to_string();
-    let payload_bytes = payload_bytes.to_string();
-    let target = target.to_string();
-    record_workload_event(
-        "ping_started",
-        format!(
-            "target={target}, count={count}, interval_ms={interval_ms}, \
-             payload_bytes={payload_bytes}, interface={interface}"
-        ),
-    );
-
-    let mut child = Command::new("/usr/bin/ping")
-        .args([
-            "-n",
-            "-I",
-            interface,
-            "-c",
-            &count,
-            "-i",
-            &interval,
-            "-s",
-            &payload_bytes,
-            "-W",
-            "3",
-            &target,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .wrap_err("failed to start /usr/bin/ping")?;
-
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
-    let stdout_task = tokio::spawn(log_lines("stdout", BufReader::new(stdout)));
-    let stderr_task = tokio::spawn(log_lines("stderr", BufReader::new(stderr)));
-
-    let mut interrupted = false;
-    let status = {
-        let wait = child.wait();
-        tokio::pin!(wait);
-        tokio::select! {
-            status = &mut wait => Some(status.wrap_err("failed while waiting for ping")?),
-            signal = tokio::signal::ctrl_c() => {
-                signal.wrap_err("failed to listen for Ctrl-C")?;
-                interrupted = true;
-                None
-            }
-        }
-    };
-
-    // If Ctrl-C won the select, dropping a kill_on_drop child terminates ping and closes its pipes.
-    drop(child);
-    stdout_task.await.wrap_err("ping stdout task failed")??;
-    stderr_task.await.wrap_err("ping stderr task failed")??;
-
-    if interrupted {
-        record_workload_event("ping_interrupted", "received Ctrl-C");
-        bail!("ping interrupted by Ctrl-C");
-    }
-
-    let status = status.expect("status is present unless interrupted");
-    record_workload_event("ping_finished", format!("status={status}"));
-    if !status.success() {
-        bail!("ping exited unsuccessfully with {status}");
-    }
-    Ok(())
 }
 
 /// Runs iperf3 through the tunnel in both directions, so one trace covers the send path

@@ -3,32 +3,11 @@ name: Dial9 profile
 on:
   workflow_dispatch:
     inputs:
-      ping-count:
-        description: ICMP echo requests through the tunnel
-        required: false
-        default: 100
-        type: number
-      ping-interval-ms:
-        description: Delay between echo requests, in milliseconds
-        required: false
-        default: 10
-        type: number
-      ping-payload-bytes:
-        description: ICMP payload size in bytes (0-1392)
-        required: false
-        default: 56
-        type: number
       cpu-sample-hz:
         description: On-CPU sampling frequency in Hz
         required: false
         default: 999
         type: number
-      workload:
-        description: Workload to record (ping or iperf)
-        required: false
-        default: ping
-        type: choice
-        options: [ping, iperf]
       iperf-seconds:
         description: Seconds per iperf3 direction (send and receive each)
         required: false
@@ -45,9 +24,13 @@ jobs:
     # not part of the benchmark series that Bencher tracks.
     runs-on: ["self-hosted", "Linux", "benchy"]
     timeout-minutes: 30
+    env:
+      TRACE_SUBDIR: dial9-traces-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout gotatun
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
         with:
@@ -64,34 +47,40 @@ jobs:
       - name: Report CPU profiling permissions
         run: |
           paranoid=$(cat /proc/sys/kernel/perf_event_paranoid)
-          echo "perf_event_paranoid=$paranoid (CPU profiling needs <= 2, scheduler events <= 1; dial9 falls back to its ctimer backend otherwise)"
-          [ "$paranoid" -le 2 ] || echo "::warning::perf_event_paranoid=$paranoid restricts perf-based CPU sampling"
+          echo "perf_event_paranoid=$paranoid; the profiled process runs through sudo. Check cpu.profile.backend in the trace for the actual backend."
       - name: Record the tunnel under dial9
         env:
           BENCHY_PEER: ${{ vars.BENCHY_PEER }}
           BENCHY_ALICE_ADDRESS: ${{ vars.BENCHY_ALICE_ADDRESS }}
           BENCHY_BOB_ADDRESS: ${{ vars.BENCHY_BOB_ADDRESS }}
           BENCHY_WIREGUARD_PORT: ${{ vars.BENCHY_WIREGUARD_PORT }}
-          TRACE_DIR: ${{ runner.temp }}/dial9-traces-${{ github.run_id }}
+          TRACE_DIR: ${{ runner.temp }}/${{ env.TRACE_SUBDIR }}
+          CPU_SAMPLE_HZ: ${{ inputs.cpu-sample-hz }}
+          IPERF_SECONDS: ${{ inputs.iperf-seconds }}
         run: |
           dial9/target/profiling/gotatun-dial9 run \
             --trace-dir "$TRACE_DIR" \
-            --ping-count "${{ inputs.ping-count }}" \
-            --ping-interval-ms "${{ inputs.ping-interval-ms }}" \
-            --ping-payload-bytes "${{ inputs.ping-payload-bytes }}" \
-            --cpu-sample-hz "${{ inputs.cpu-sample-hz }}" \
-            --workload "${{ inputs.workload }}" \
-            --iperf-seconds "${{ inputs.iperf-seconds }}"
+            --cpu-sample-hz "$CPU_SAMPLE_HZ" \
+            --iperf-seconds "$IPERF_SECONDS"
+          {
+            echo '## Dial9 profile'
+            echo
+            echo "Source: \`$GITHUB_SHA\`"
+            echo "Workload: TCP iperf, $IPERF_SECONDS seconds sending followed by $IPERF_SECONDS seconds receiving."
+            echo "Trace artifact: \`$TRACE_SUBDIR\` (7-day retention)."
+            echo 'Use dial9/README.md to view and validate the downloaded trace.'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload dial9 traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: dial9-traces-${{ github.run_id }}
-          path: ${{ runner.temp }}/dial9-traces-${{ github.run_id }}
+          name: ${{ env.TRACE_SUBDIR }}
+          path: ${{ runner.temp }}/${{ env.TRACE_SUBDIR }}
           retention-days: 7
           if-no-files-found: error
       - name: Free the runner disk
         if: ${{ always() }}
-        # The tunnel writes the traces as root, so the cleanup needs sudo; also sweep
-        # leftovers of runs whose own cleanup could not run.
-        run: sudo -n rm -rf "${{ runner.temp }}"/dial9-traces-*
+        # Root writes the trace files; remove only this attempt's directory after upload.
+        env:
+          TRACE_DIR: ${{ runner.temp }}/${{ env.TRACE_SUBDIR }}
+        run: sudo -n rm -rf "$TRACE_DIR"
