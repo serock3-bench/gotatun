@@ -29,39 +29,35 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-const DEFINITION: BenchmarkDefinition = BenchmarkDefinition {
-    repository: "gotatun",
-    name: "gotatun-throughput",
-    description: "GotaTun tunnel throughput measured with iperf3",
-};
-const SENDER_THROUGHPUT: MeasurementDefinition = MeasurementDefinition {
-    id: "throughput.sender",
-    label: "Sender throughput",
+#[derive(Clone, Copy)]
+pub enum Direction {
+    Download,
+    Upload,
+}
+impl Direction {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Download => "gotatun-download",
+            Self::Upload => "gotatun-upload",
+        }
+    }
+    fn sender(self) -> bool {
+        matches!(self, Self::Upload)
+    }
+}
+const THROUGHPUT: MeasurementDefinition = MeasurementDefinition {
+    id: "throughput.network",
+    label: "Throughput",
     unit: Unit::BitsPerSecond,
 };
-const RECEIVER_THROUGHPUT: MeasurementDefinition = MeasurementDefinition {
-    id: "throughput.receiver",
-    label: "Receiver throughput",
-    unit: Unit::BitsPerSecond,
-};
-const DOWN_IPERF_CPU: MeasurementDefinition = MeasurementDefinition {
-    id: "cpu.iperf.down",
-    label: "DOWN iperf CPU (% of one logical CPU)",
+const IPERF_CPU: MeasurementDefinition = MeasurementDefinition {
+    id: "cpu.iperf",
+    label: "iperf CPU",
     unit: Unit::Percent,
 };
-const UP_IPERF_CPU: MeasurementDefinition = MeasurementDefinition {
-    id: "cpu.iperf.up",
-    label: "UP iperf CPU (% of one logical CPU)",
-    unit: Unit::Percent,
-};
-const DOWN_GOTATUN_CPU: MeasurementDefinition = MeasurementDefinition {
-    id: "cpu.gotatun.down",
-    label: "DOWN GotaTun CPU (% of one logical CPU)",
-    unit: Unit::Percent,
-};
-const UP_GOTATUN_CPU: MeasurementDefinition = MeasurementDefinition {
-    id: "cpu.gotatun.up",
-    label: "UP GotaTun CPU (% of one logical CPU)",
+const GOTATUN_CPU: MeasurementDefinition = MeasurementDefinition {
+    id: "cpu.gotatun",
+    label: "GotaTun CPU",
     unit: Unit::Percent,
 };
 const READY_MARKER: &str = "BENCHY_READY";
@@ -118,8 +114,7 @@ struct ControllerConfig {
 
 struct BenchmarkOutput {
     iperf: benchy_lib::iperf::Output,
-    alice_gotatun_cpu_percent: f64,
-    bob_gotatun_cpu_percent: f64,
+    gotatun_cpu_percent: f64,
 }
 
 struct ProcessCpuSample {
@@ -128,7 +123,7 @@ struct ProcessCpuSample {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run(direction: Direction) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -139,39 +134,52 @@ async fn main() -> Result<()> {
         return run_endpoint(args).await;
     }
 
+    let definition = BenchmarkDefinition {
+        repository: "gotatun",
+        name: direction.name(),
+        description: "TCP throughput and CPU usage measured on Alice",
+    };
     let output = cli
         .output
-        .unwrap_or_else(|| default_output_path(DEFINITION.name));
-    let mut recorder = Recorder::new(DEFINITION, output).await;
+        .unwrap_or_else(|| default_output_path(definition.name));
+    let mut recorder = Recorder::new(definition, output).await;
     let config = controller_config()?;
+    anyhow::ensure!(
+        (1..=120).contains(&config.duration),
+        "BENCHY_DURATION must be 1–120 seconds"
+    );
     recorder.parameter("duration_seconds", config.duration);
     recorder.parameter("mtu", config.mtu);
     recorder.parameter("listen_port", config.listen_port);
 
-    match run_controller(&config).await {
+    recorder.parameter(
+        "direction",
+        if direction.sender() {
+            "upload"
+        } else {
+            "download"
+        },
+    );
+    recorder.parameter("measured_host", "alice");
+    recorder.parameter("aead_backend", "ring");
+    match run_controller(&config, direction).await {
         Ok(output) => {
+            let throughput = if direction.sender() {
+                output.iperf.end.sum_sent.bits_per_second
+            } else {
+                output.iperf.end.sum_received.bits_per_second
+            };
             recorder.iperf_throughput(
-                SENDER_THROUGHPUT,
-                output.iperf.end.sum_sent.bits_per_second,
+                THROUGHPUT,
+                throughput,
                 &output.iperf.interval_output,
-                true,
-            )?;
-            recorder.iperf_throughput(
-                RECEIVER_THROUGHPUT,
-                output.iperf.end.sum_received.bits_per_second,
-                &output.iperf.interval_output,
-                false,
+                direction.sender(),
             )?;
             recorder.measurement(
-                DOWN_IPERF_CPU,
-                output.iperf.end.cpu_utilization_percent.remote_total,
-            )?;
-            recorder.measurement(
-                UP_IPERF_CPU,
+                IPERF_CPU,
                 output.iperf.end.cpu_utilization_percent.host_total,
             )?;
-            recorder.measurement(DOWN_GOTATUN_CPU, output.alice_gotatun_cpu_percent)?;
-            recorder.measurement(UP_GOTATUN_CPU, output.bob_gotatun_cpu_percent)?;
+            recorder.measurement(GOTATUN_CPU, output.gotatun_cpu_percent)?;
             recorder.success().await
         }
         Err(error) => {
@@ -194,7 +202,10 @@ fn controller_config() -> Result<ControllerConfig> {
     })
 }
 
-async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
+async fn run_controller(
+    config: &ControllerConfig,
+    direction: Direction,
+) -> Result<BenchmarkOutput> {
     let _machine_lock = MachineLock::acquire("/tmp/benchy.lock")?;
     let alice_private = StaticSecret::from(rand::random::<[u8; 32]>());
     let bob_private = StaticSecret::from(rand::random::<[u8; 32]>());
@@ -227,122 +238,196 @@ async fn run_controller(config: &ControllerConfig) -> Result<BenchmarkOutput> {
     let run_id = env::var("GITHUB_RUN_ID").unwrap_or_else(|_| std::process::id().to_string());
     let remote_dir = format!("/tmp/benchy-{run_id}");
     let remote_executable = format!("{remote_dir}/gotatun-throughput");
-    deploy(&config.peer, &executable, &remote_dir, &remote_executable).await?;
+    let mut processes: Vec<OwnedProcess> = Vec::new();
+    let result = async {
+        deploy(&config.peer, &executable, &remote_dir, &remote_executable).await?;
+        processes.push(OwnedProcess::new(
+            spawn_local_endpoint(&executable, &local_args)?,
+            None,
+        ));
+        let local = processes.last_mut().unwrap();
+        let local_pid = wait_ready(&mut local.child, READY_MARKER)
+            .await
+            .context("local endpoint failed to start")?;
+        local.pid = Some(local_pid);
+        processes.push(OwnedProcess::new(
+            spawn_remote_endpoint(&config.peer, &remote_executable, &remote_args)?,
+            Some(&config.peer),
+        ));
+        let remote = processes.last_mut().unwrap();
+        remote.pid = Some(
+            wait_ready(&mut remote.child, READY_MARKER)
+                .await
+                .context("remote endpoint failed to start")?,
+        );
+        wait_for_tunnel(&config.peer, local_args.tunnel_address).await?;
 
-    let mut local = spawn_local_endpoint(&executable, &local_args)?;
-    let local_pid = wait_ready(&mut local)
-        .await
-        .context("local endpoint failed to start")?;
+        // Alice is always the client. Reverse mode makes Bob send for the download case.
+        let server_command = format!(
+            "sh -c {}",
+            shell_quote(&format!(
+                "echo BENCHY_IPERF_PID $$; exec iperf3 --server --json --interval 1 --bind {} --port {}",
+                remote_args.tunnel_address, config.iperf_port
+            ))
+        );
+        let server = Command::new("ssh")
+            .arg(&config.peer)
+            .arg(server_command)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?;
+        processes.push(OwnedProcess::new(server, Some(&config.peer)));
+        let server = processes.last_mut().unwrap();
+        server.pid = Some(wait_ready(&mut server.child, "BENCHY_IPERF_PID").await?);
+        wait_iperf_ready(server, remote_args.tunnel_address, config.iperf_port).await?;
 
-    let mut remote = spawn_remote_endpoint(&config.peer, &remote_executable, &remote_args)?;
-    let remote_pid = wait_ready(&mut remote)
-        .await
-        .context("remote endpoint failed to start")?;
-
-    wait_for_tunnel(&config.peer, local_args.tunnel_address).await?;
-
-    let mut iperf_server = Command::new("iperf3")
-        .args([
-            "--server",
-            "--json",
-            "--interval",
-            "1",
-            "--bind",
-            &local_args.tunnel_address.to_string(),
+        let clock_ticks = clock_ticks_per_second().await?;
+        let before = process_cpu_sample(local_pid).await?;
+        let mut client = Command::new("iperf3");
+        client.args([
+            "--client",
+            &remote_args.tunnel_address.to_string(),
             "--port",
             &config.iperf_port.to_string(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .context("failed to start local iperf3 server")?;
-
-    sleep(Duration::from_millis(250)).await;
-    let result = async {
-        let (alice_clock_ticks, bob_clock_ticks) = tokio::try_join!(
-            clock_ticks_per_second(None),
-            clock_ticks_per_second(Some(&config.peer)),
-        )?;
-        let (alice_before, bob_before) = tokio::try_join!(
-            process_cpu_sample(None, local_pid),
-            process_cpu_sample(Some(&config.peer), remote_pid),
-        )?;
-
-        let iperf_command = remote_command(
-            "iperf3",
-            &[
-                "--client".to_owned(),
-                local_args.tunnel_address.to_string(),
-                "--port".to_owned(),
-                config.iperf_port.to_string(),
-                "--time".to_owned(),
-                config.duration.to_string(),
-                "--json".to_owned(),
-                "--get-server-output".to_owned(),
-                "--interval".to_owned(),
-                "1".to_owned(),
-            ],
-        );
-        let output = checked_output("ssh", [&config.peer, &iperf_command]).await?;
-
-        let (alice_after, bob_after) = tokio::try_join!(
-            process_cpu_sample(None, local_pid),
-            process_cpu_sample(Some(&config.peer), remote_pid),
-        )?;
+            "--time",
+            &config.duration.to_string(),
+            "--json",
+            "--get-server-output",
+            "--interval",
+            "1",
+        ]);
+        if !direction.sender() {
+            client.arg("--reverse");
+        }
+        let output = timeout(
+            Duration::from_secs(config.duration + 30),
+            client.kill_on_drop(true).output(),
+        )
+        .await
+        .context("iperf client timed out")??;
+        if !output.status.success() {
+            bail!(
+                "iperf client failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let after = process_cpu_sample(local_pid).await?;
         let iperf = parse_iperf_output(output).await?;
-
         Ok(BenchmarkOutput {
             iperf,
-            alice_gotatun_cpu_percent: process_cpu_percent(
-                &alice_before,
-                &alice_after,
-                alice_clock_ticks,
-            )?,
-            bob_gotatun_cpu_percent: process_cpu_percent(&bob_before, &bob_after, bob_clock_ticks)?,
+            gotatun_cpu_percent: process_cpu_percent(&before, &after, clock_ticks)?,
         })
+    };
+    let result = tokio::select! {
+        result = result => result,
+        _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!("benchmark interrupted")),
+    };
+    let mut cleanup_error = None;
+    for process in processes.iter_mut().rev() {
+        if let Err(error) = process.stop().await {
+            cleanup_error = Some(error);
+        }
     }
+    let _ = checked_output(
+        "ssh",
+        [
+            &config.peer,
+            &format!("rm -rf {}", shell_quote(&remote_dir)),
+        ],
+    )
     .await;
-
-    stop_endpoint(None, local_pid).await;
-    stop_endpoint(Some(&config.peer), remote_pid).await;
-    let _ = local.wait().await;
-    let _ = remote.wait().await;
-    let _ = iperf_server.kill().await;
-
-    result
+    let result = result?;
+    if let Some(error) = cleanup_error {
+        return Err(error);
+    }
+    Ok(result)
 }
 
-async fn clock_ticks_per_second(peer: Option<&str>) -> Result<u64> {
-    let output = match peer {
-        Some(peer) => {
-            let command = remote_command("getconf", &["CLK_TCK".to_owned()]);
-            checked_output("ssh", [peer, &command]).await?
+struct OwnedProcess {
+    child: Child,
+    peer: Option<String>,
+    pid: Option<u32>,
+}
+impl OwnedProcess {
+    fn new(child: Child, peer: Option<&str>) -> Self {
+        Self {
+            child,
+            peer: peer.map(str::to_owned),
+            pid: None,
         }
-        None => checked_output("getconf", ["CLK_TCK"]).await?,
-    };
-    String::from_utf8(output.stdout)
-        .context("getconf returned non-UTF-8 output")?
+    }
+    async fn stop(&mut self) -> Result<()> {
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if let Some(pid) = self
+            .pid
+            .or_else(|| self.peer.is_none().then(|| self.child.id()).flatten())
+        {
+            stop_endpoint(self.peer.as_deref(), pid).await;
+        }
+        if let Ok(status) = timeout(Duration::from_secs(8), self.child.wait()).await {
+            status?;
+        } else {
+            if let Some(pid) = self.pid {
+                let command = remote_command(
+                    "sudo",
+                    &["-n".into(), "kill".into(), "-KILL".into(), pid.to_string()],
+                );
+                if let Some(peer) = &self.peer {
+                    let _ = checked_output("ssh", [peer, &command]).await;
+                } else {
+                    let _ = checked_output("sudo", ["-n", "kill", "-KILL", &pid.to_string()]).await;
+                }
+            }
+            self.child.kill().await?;
+            bail!("owned process did not stop gracefully");
+        }
+        Ok(())
+    }
+}
+async fn wait_iperf_ready(process: &mut OwnedProcess, address: Ipv4Addr, port: u16) -> Result<()> {
+    for _ in 0..20 {
+        if let Some(status) = process.child.try_wait()? {
+            bail!("our iperf server exited: {status}");
+        }
+        let output = checked_output(
+            "ssh",
+            [
+                process.peer.as_ref().unwrap(),
+                &format!("ss -H -ltnp 'sport = :{port}'"),
+            ],
+        )
+        .await?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        if text.lines().any(|line| {
+            line.split_whitespace()
+                .any(|s| s == format!("{address}:{port}"))
+                && line.contains(&format!("pid={},", process.pid.unwrap()))
+        }) {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    bail!("our iperf server did not bind its address; refusing another listener")
+}
+
+async fn clock_ticks_per_second() -> Result<u64> {
+    let output = checked_output("getconf", ["CLK_TCK"]).await?;
+    String::from_utf8(output.stdout)?
         .trim()
         .parse()
-        .context("getconf returned an invalid CLK_TCK value")
+        .context("invalid CLK_TCK")
 }
 
-async fn process_cpu_sample(peer: Option<&str>, pid: u32) -> Result<ProcessCpuSample> {
+async fn process_cpu_sample(pid: u32) -> Result<ProcessCpuSample> {
     let path = format!("/proc/{pid}/stat");
     let request_started = Instant::now();
-    let stat = match peer {
-        Some(peer) => {
-            let command = remote_command("cat", std::slice::from_ref(&path));
-            let output = checked_output("ssh", [peer, &command]).await?;
-            String::from_utf8(output.stdout).context("remote process stat was not UTF-8")?
-        }
-        None => tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("failed to read {path}"))?,
-    };
+    let stat = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("failed to read {path}"))?;
     let request_finished = Instant::now();
-
     Ok(ProcessCpuSample {
         ticks: parse_process_cpu_ticks(&stat)?,
         observed_at: request_started + (request_finished - request_started) / 2,
@@ -503,22 +588,24 @@ fn spawn_endpoint(mut command: Command, host: &str) -> Result<Child> {
         .with_context(|| format!("failed to start {host} endpoint"))
 }
 
-async fn wait_ready(child: &mut Child) -> Result<u32> {
+async fn wait_ready(child: &mut Child, marker: &str) -> Result<u32> {
     let stdout = child
         .stdout
         .take()
         .context("endpoint stdout was not captured")?;
     let mut lines = BufReader::new(stdout).lines();
-    timeout(Duration::from_secs(20), async {
+    let pid = timeout(Duration::from_secs(20), async {
         while let Some(line) = lines.next_line().await? {
-            if let Some(pid) = line.strip_prefix(&format!("{READY_MARKER} ")) {
+            if let Some(pid) = line.strip_prefix(&format!("{marker} ")) {
                 return pid.parse().context("endpoint returned an invalid PID");
             }
         }
         bail!("endpoint exited before becoming ready")
     })
     .await
-    .context("timed out waiting for endpoint readiness")?
+    .context("timed out waiting for endpoint readiness")??;
+    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    Ok(pid)
 }
 
 async fn wait_for_tunnel(peer: &str, destination: Ipv4Addr) -> Result<()> {
