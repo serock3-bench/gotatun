@@ -21,7 +21,9 @@ Alice is always the iperf client and the measured host. `gotatun-download` uses 
 (Bob → Alice); `gotatun-upload` uses normal mode (Alice → Bob). Both record exactly the same
 three measurements: `throughput.network`, `cpu.gotatun`, and `cpu.iperf`. Throughput uses Alice's
 receiver summary for download and sender summary for upload. CPU samples come only from
-Alice: GotaTun's process ticks and iperf's local CPU total. Bob needs no process CPU sampling.
+Alice: GotaTun's process ticks and iperf's local CPU total. Alice's local one-second intervals
+provide throughput uncertainty in either direction; Bob's JSON report is not requested. Bob needs
+no process CPU sampling.
 CPU percentages are normalized to one logical core and may exceed 100%.
 
 ## What each workflow measures

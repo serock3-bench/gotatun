@@ -266,7 +266,7 @@ async fn run_controller(
         let server_command = format!(
             "sh -c {}",
             shell_quote(&format!(
-                "echo BENCHY_IPERF_PID $$; exec iperf3 --server --json --interval 1 --bind {} --port {}",
+                "echo BENCHY_IPERF_PID $$; exec iperf3 --server --bind {} --port {}",
                 remote_args.tunnel_address, config.iperf_port
             ))
         );
@@ -293,7 +293,6 @@ async fn run_controller(
             "--time",
             &config.duration.to_string(),
             "--json",
-            "--get-server-output",
             "--interval",
             "1",
         ]);
