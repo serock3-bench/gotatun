@@ -11,7 +11,7 @@ on:
       iperf-seconds:
         description: Seconds per iperf3 direction (send and receive each)
         required: false
-        default: 10
+        default: 5
         type: number
 
 permissions:

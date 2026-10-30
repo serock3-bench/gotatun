@@ -67,7 +67,7 @@ pub struct TunnelArgs {
     #[arg(long, default_value_t = 999, value_parser = clap::value_parser!(u64).range(1..=4000))]
     cpu_sample_hz: u64,
     /// Seconds per iperf3 direction (send and receive each).
-    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u16).range(1..=60))]
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u16).range(1..=60))]
     iperf_seconds: u16,
     /// Port of the iperf3 server on the peer.
     #[arg(long, default_value_t = 5209)]
@@ -127,6 +127,7 @@ fn init_tracing() -> Result<()> {
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .with(Dial9TracingLayer::new())
+        .with(crate::tracing_events::TracingEventLayer)
         .try_init()
         .map_err(|error| eyre!("failed to install tracing subscriber: {error}"))
 }

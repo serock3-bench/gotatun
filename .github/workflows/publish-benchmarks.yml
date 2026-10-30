@@ -18,5 +18,15 @@ jobs:
     uses: Serock3/benchy/.github/workflows/publish-benchmarks.yml@main
     with:
       bencher-project: ${{ vars.BENCHER_PROJECT }}
+      # Calibrated on repeated complete main runs; see benchmarks/DEMO.md.
+      # iperf CPU stays diagnostic because it scales with traffic volume.
+      threshold-policy: >-
+        {"minimum_samples":5,"maximum_samples":10,"measures":{
+          "throughput-network":{"lower":0.07},
+          "cpu-gotatun":{"upper":0.10},
+          "time":{"upper":0.10},
+          "allocated":{"upper":0.05},
+          "lock-wait":{"upper":0.30},
+          "lock-hold":{"upper":0.30}}}
     secrets:
       BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
