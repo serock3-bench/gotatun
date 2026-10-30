@@ -17,7 +17,9 @@ use crate::{
     packet::{Packet, WgData, WgDataHeader, WgKind},
 };
 use bytes::{Buf, BytesMut};
-use parking_lot::Mutex;
+// hotpath::mutex! returns an instrumented wrapper with the profiling feature
+// enabled, and the plain parking_lot::Mutex otherwise.
+use hotpath::wrap::parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zerocopy::FromBytes;
 
@@ -194,7 +196,10 @@ impl Session {
             ),
             sender: LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &sending_key).unwrap()),
             sending_key_counter: AtomicU64::new(0),
-            receiving_key_counter: Mutex::new(Default::default()),
+            receiving_key_counter: hotpath::mutex!(
+                parking_lot::Mutex::new(Default::default()),
+                label = "receiving-key-counter"
+            ),
         }
     }
 
@@ -226,6 +231,7 @@ impl Session {
     /// Returns `Err(packet)` (the original, un-encapsulated packet) once the sending counter has
     /// reached `REJECT_AFTER_MESSAGES`: the session must then be replaced by a fresh handshake
     /// before more transport data can be sent, so the AEAD nonce can never wrap.
+    #[hotpath::measure]
     pub(super) fn format_packet_data(&self, packet: Packet) -> Result<Packet<WgData>, Packet> {
         // Check before incrementing so an exhausted counter is never advanced (and thus can never
         // wrap back around to a previously used value).
@@ -279,6 +285,7 @@ impl Session {
     }
 
     /// Decapsulate `packet` and return the decrypted data.
+    #[hotpath::measure]
     pub(super) fn receive_packet_data(
         &self,
         mut packet: Packet<WgData>,

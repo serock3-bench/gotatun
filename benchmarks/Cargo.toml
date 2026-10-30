@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gotatun-throughput"]
+members = ["gotatun-criterion", "gotatun-hotpath", "gotatun-throughput"]
 
 [workspace.package]
 edition = "2024"
@@ -11,11 +11,16 @@ license = "MPL-2.0"
 anyhow = "1.0"
 benchy-lib = { path = "../../benchy/benchy-lib" }
 benchy-runner = { path = "../../benchy/benchy-runner" }
+bytes = "1.11"
 clap = { version = "4.5", features = ["derive", "env"] }
 gotatun = { path = "../gotatun", default-features = false, features = ["device", "ring", "tun"] }
+# Pinned exactly: the JSON report format benchy-runner parses may change between releases.
+hotpath = { version = "=0.30.1", default-features = false }
 hex = "0.4"
 ipnetwork = "0.21"
 rand = "0.9"
+serde_json = "1.0"
 tokio = { version = "1.43", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zerocopy = { version = "0.8", features = ["std"] }

@@ -45,6 +45,9 @@ duplicate = { workspace = true, default-features = false }
 either = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
+# Profiling instrumentation for the benchmarking setup. The macros are
+# no-ops without the `hotpath` feature: https://hotpath.rs
+hotpath = { workspace = true, features = ["parking_lot"] }
 hmac = { workspace = true }
 ip_network = { workspace = true }
 ip_network_table = { workspace = true }
@@ -73,6 +76,9 @@ zerocopy = { workspace = true, features = ["derive", "std"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
+# Profiling adapter for the criterion benches; without the `hotpath` feature
+# (or without HOTPATH_CRITERION_ITERATIONS) the benches behave exactly as before.
+hotpath = { workspace = true, features = ["criterion-0-8"] }
 etherparse = { workspace = true }
 hex = { workspace = true }
 test-log = { workspace = true }
@@ -105,6 +111,10 @@ nix = { workspace = true, default-features = false, features = [
 [features]
 default = ["aws-lc-rs"]
 daita = ["device", "dep:maybenot"]
+# Turn on the hotpath-rs instrumentation on the data path; without it every
+# hotpath macro compiles to nothing. https://hotpath.rs
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 # Use the `ring` crate as the AEAD backend. Combine with
 # `default-features = false` to avoid also pulling in `aws-lc-rs`,
 # which would otherwise be compiled and linked unused.
