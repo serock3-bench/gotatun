@@ -69,6 +69,23 @@ available through `cargo bench`; they are not part of Benchy.
 
 ## Network configuration
 
+## GitHub Actions
+
+Benchmarks run automatically for pushes to `main` and pull requests targeting `main`. Workflows
+from external contributors require maintainer approval from the pull request page. Manual runs
+can select a branch and a subset of benchmarks through the Actions tab.
+
+A separate publishing workflow uploads successful results to Bencher and posts a check and
+comment on the pull request. Reports identify the exact PR head commit tested; raw JSON remains
+available in the benchmark run's summary and artifacts. Bencher also compares posted results
+against percentage-based regression thresholds: more than a 5% throughput drop or a 10% GotaTun
+CPU increase relative to the mean of up to 30 prior samples. At least one baseline sample is
+required. iperf CPU is reported for diagnosis without an automatic threshold. Potential
+regressions are flagged as alerts in the check and PR comment.
+
+Bencher groups all six measures under `gotatun-throughput`. Measure names include their units,
+such as `Receiver throughput (Gb/s)` and `DOWN GotaTun CPU (logical CPU %)`.
+
 Configuration is read at runtime:
 
 - `BENCHY_PEER` (default `mole@10.0.0.2`)
