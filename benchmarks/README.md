@@ -10,30 +10,31 @@ directly:
 cargo run --release --locked \
   --config 'target."cfg(unix)".runner="/usr/bin/env"' \
   --manifest-path benchmarks/Cargo.toml \
-  --package gotatun-throughput-benchmark
+  --package gotatun-download-benchmark
 ```
 
-The throughput scenario runs on the controller host and deploys its current executable to the peer.
-It embeds the GotaTun library, but invokes the host's `ip`, `ssh`, `scp`, `ping`, and `iperf3` tools.
-Both hosts need passwordless access to the narrow privileged operations used by the benchmark.
-The result records sender- and receiver-reported throughput plus process CPU usage for iperf3 and
-GotaTun on the outbound (`UP`) and inbound (`DOWN`) paths. CPU percentages are normalized to one
-logical core and may exceed 100% when a process uses multiple cores.
+The two network benchmarks share an uninstrumented controller in `throughput-common`. Each
+builds and deploys its own executable, embeds GotaTun, and invokes `ip`, `ssh`, `scp`, `ping`,
+`ss` and `iperf3`. Both hosts need passwordless sudo for endpoint setup and cleanup.
 
-The stable v1 measurement IDs are `throughput.sender`, `throughput.receiver`, `cpu.iperf.up`,
-`cpu.iperf.down`, `cpu.gotatun.up`, and `cpu.gotatun.down`. Display labels are recorded separately
-and may change without breaking a result series.
+Alice is always the iperf client and the measured host. `gotatun-download` uses reverse mode
+(Bob → Alice); `gotatun-upload` uses normal mode (Alice → Bob). Both record exactly the same
+three measurements: `throughput.network`, `cpu.gotatun`, and `cpu.iperf`. Throughput uses Alice's
+receiver summary for download and sender summary for upload. CPU samples come only from
+Alice: GotaTun's process ticks and iperf's local CPU total. Bob needs no process CPU sampling.
+CPU percentages are normalized to one logical core and may exceed 100%.
 
 ## What each workflow measures
 
 | Workflow / benchmark | Output | Meaning |
 | --- | --- | --- |
-| Benchmarks / `gotatun-throughput` | Gb/s and logical-core CPU % | Real TCP transfer from Bob to Alice; GotaTun is uninstrumented. |
+| Benchmarks / `gotatun-download` | Gb/s and logical-core CPU % | Bob → Alice, measured on Alice; GotaTun is uninstrumented. |
+| Benchmarks / `gotatun-upload` | Same shared measures | Alice → Bob, measured on Alice; GotaTun is uninstrumented. |
 | Benchmarks / `gotatun-hotpath` | ns/call, allocated B/call, lock ns | Two in-process tunnels exchanging packets, with hotpath instrumentation. |
 | Dial9 profile | Trace artifact | Alice's full device under TCP send then receive; manual, no Bencher values. |
 
-The first two benchmarks are in the default set. Select IDs in the manual workflow to run only
-one. The network benchmark runs on pushes to fork main and approved PRs; the nightly workflow
+All three numeric benchmarks are in the default set. Select IDs in the manual workflow to run only
+one. The network benchmarks run on pushes to fork main and approved PRs; the nightly workflow
 refreshes main. Profiling and throughput builds are separate, so Cargo feature unification does
 not instrument the network measurement.
 
@@ -44,19 +45,19 @@ It completes a handshake, warms up with 10,000 packets in each direction, then m
 packets per direction with a 1,200-byte IP payload and the `ring` AEAD backend. No sockets,
 TUN devices, or GSO code execute in this workload. It cannot validate a socket optimization.
 
-- `hotpath.<function path>.time`: inclusive average ns/call. Parent timings include child
-  timings and instrumentation overhead; do not add them together.
-- `hotpath.<function path>.alloc`: exclusive allocated B/call, excluding instrumented children.
-  This measures allocated volume, not retained memory. A zero means no observed allocation
-  attributed to that function, not that the whole packet path is allocation-free.
-- `hotpath.lock.<name>.wait` / `.hold`: acquisition-count-weighted average ns across instances
-  from the same source site. This serial workload measures **uncontended** lock overhead,
-  not contention or multicore scaling. Hotpath collects these from lock creation, so they
-  include the handshake and warmup (two acquisitions per received data packet).
+Each function is a Bencher benchmark such as `gotatun-hotpath/format_packet_data`, with shared
+`time` (inclusive ns/call) and `allocated` (exclusive B/call) measures. Parent timings include
+children and instrumentation overhead; do not add them. Allocation volume is not retained
+memory; a parent's zero excludes allocations attributed to instrumented children.
+
+Locks appear under `gotatun-hotpath/lock/<name>` with shared `lock.wait` and `lock.hold` measures
+in ns. Instances from one source site are weighted by acquisition count. This serial workload
+measures **uncontended** acquisition, not contention/scaling. Lock statistics include the
+handshake and warmup (two acquisitions per received data packet).
 
 The four expected functions are `handle_outgoing_packet`, `format_packet_data`,
 `handle_incoming_packet`, and `receive_packet_data`. The benchmark fails if any has a wrong
-call count. Function paths map `::` to `.` in metric IDs. The full report, including call counts,
+call count or a timing sampling override. The full report, including original function paths, call counts,
 sampling settings and lock instances, is retained as `profiles/gotatun-hotpath.json` beside the
 raw Benchy result in the workflow artifact. Each repeated sample has its own report.
 

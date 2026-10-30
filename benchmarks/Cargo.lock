@@ -702,6 +702,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gotatun-benchmark-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "benchy-lib",
+ "benchy-runner",
+ "clap",
+ "gotatun",
+ "hex",
+ "ipnetwork",
+ "rand",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "gotatun-download-benchmark"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gotatun-benchmark-common",
+]
+
+[[package]]
 name = "gotatun-hotpath-benchmark"
 version = "0.1.0"
 dependencies = [
@@ -718,20 +743,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "gotatun-throughput-benchmark"
+name = "gotatun-upload-benchmark"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "benchy-lib",
- "benchy-runner",
- "clap",
- "gotatun",
- "hex",
- "ipnetwork",
- "rand",
- "tokio",
- "tracing",
- "tracing-subscriber",
+ "gotatun-benchmark-common",
 ]
 
 [[package]]

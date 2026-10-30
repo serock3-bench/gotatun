@@ -83,7 +83,8 @@ async fn main() -> Result<()> {
         ] {
             anyhow::ensure!(
                 timing.data.iter().any(|entry| entry.name.ends_with(name)
-                    && entry.calls == 2 * PACKETS_PER_DIRECTION as u64),
+                    && entry.calls == 2 * PACKETS_PER_DIRECTION as u64
+                    && entry.sampled_calls == entry.calls),
                 "missing or incorrect call count for {name}"
             );
         }
@@ -193,8 +194,8 @@ fn run_data_path(report_path: &std::path::Path) -> Result<()> {
     for _ in 0..WARMUP_PACKETS_PER_DIRECTION {
         exchange()?;
     }
-    // Handshake and warmup are outside the measured region. Sampling is explicit so local
-    // environment settings cannot silently change the profiling mode.
+    // Handshake and warmup are outside the function measurement region. The report check
+    // rejects environment overrides that change the requested full timing sample.
     let _guard = hotpath::HotpathGuardBuilder::new("gotatun-hotpath")
         .format(hotpath::Format::Json)
         .time_sampling_rate(1.0)

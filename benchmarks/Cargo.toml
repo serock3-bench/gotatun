@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gotatun-hotpath", "gotatun-throughput"]
+members = ["gotatun-hotpath", "gotatun-download", "gotatun-upload", "throughput-common"]
 
 [workspace.package]
 edition = "2024"
